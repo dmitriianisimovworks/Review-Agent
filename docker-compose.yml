@@ -22,6 +22,7 @@ services:
     restart: unless-stopped
     networks:
       - backend
+      - edge
 
   postgres:
     image: postgres:16-alpine
@@ -62,6 +63,8 @@ networks:
   backend:
     driver: bridge
     internal: true
+  edge:
+    driver: bridge
 
 volumes:
   postgres_data:
