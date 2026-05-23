@@ -21,10 +21,11 @@ type AnalysisHandler struct {
 }
 
 type StartAnalysisRequest struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Source  string `json:"source"`
-	Mode    string `json:"mode"`
+	Name         string `json:"name"`
+	Content      string `json:"content"`
+	GoogleDocURL string `json:"google_doc_url"`
+	Source       string `json:"source"`
+	Mode         string `json:"mode"`
 }
 
 type AnalysisResponse struct {
@@ -56,10 +57,11 @@ func (h *AnalysisHandler) Start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	analysis, err := h.analysisService.StartAnalysis(r.Context(), service.StartAnalysisInput{
-		Name:    req.Name,
-		Content: req.Content,
-		Source:  domain.DocumentSource(req.Source),
-		Mode:    domain.AnalysisMode(req.Mode),
+		Name:         req.Name,
+		Content:      req.Content,
+		GoogleDocURL: req.GoogleDocURL,
+		Source:       domain.DocumentSource(req.Source),
+		Mode:         domain.AnalysisMode(req.Mode),
 	})
 	if err != nil {
 		writeError(w, err)

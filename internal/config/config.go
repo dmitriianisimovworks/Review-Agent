@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	DB       DatabaseConfig
 	Cache    CacheConfig
 	Document DocumentConfig
+	Google   GoogleConfig
 }
 
 type AppConfig struct {
@@ -54,6 +56,14 @@ type CacheConfig struct {
 	AnalysisTTLSeconds int
 }
 
+type GoogleConfig struct {
+	ServiceAccountFile string
+	OAuthClientID      string
+	OAuthClientSecret  string
+	OAuthRedirectURL   string
+	OAuthScopes        []string
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		App: AppConfig{
@@ -84,6 +94,13 @@ func Load() (Config, error) {
 		Document: DocumentConfig{
 			ChunkSize: getEnvInt("DOCUMENT_CHUNK_SIZE", 5000),
 			MaxChunks: getEnvInt("DOCUMENT_MAX_CHUNKS", 12),
+		},
+		Google: GoogleConfig{
+			ServiceAccountFile: getEnv("GOOGLE_SERVICE_ACCOUNT_FILE"),
+			OAuthClientID:      getEnv("GOOGLE_OAUTH_CLIENT_ID"),
+			OAuthClientSecret:  getEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
+			OAuthRedirectURL:   getEnv("GOOGLE_OAUTH_REDIRECT_URL"),
+			OAuthScopes:        splitCSV(getEnv("GOOGLE_OAUTH_SCOPES")),
 		},
 	}
 
@@ -137,6 +154,10 @@ func validate(cfg Config) error {
 	requireNonPlaceholder(&issues, "LLM_MODEL", cfg.LLM.Model)
 	requireNonPlaceholder(&issues, "APP_INTERNAL_API_TOKEN", cfg.App.InternalAPIToken)
 	requireNonPlaceholder(&issues, "APP_ENCRYPTION_KEY", cfg.App.EncryptionKey)
+	requireNonPlaceholder(&issues, "GOOGLE_SERVICE_ACCOUNT_FILE", cfg.Google.ServiceAccountFile)
+	requireNonPlaceholder(&issues, "GOOGLE_OAUTH_CLIENT_ID", cfg.Google.OAuthClientID)
+	requireNonPlaceholder(&issues, "GOOGLE_OAUTH_CLIENT_SECRET", cfg.Google.OAuthClientSecret)
+	requireNonPlaceholder(&issues, "GOOGLE_OAUTH_REDIRECT_URL", cfg.Google.OAuthRedirectURL)
 
 	if !strings.HasPrefix(cfg.HTTP.Address, ":") {
 		issues = append(issues, "HTTP_ADDRESS must be in the form ':8080'")
@@ -145,6 +166,7 @@ func validate(cfg Config) error {
 	validateURL(&issues, "DATABASE_URL", cfg.DB.URL)
 	validateURL(&issues, "REDIS_URL", cfg.Redis.URL)
 	validateURL(&issues, "LLM_BASE_URL", cfg.LLM.BaseURL)
+	validateURL(&issues, "GOOGLE_OAUTH_REDIRECT_URL", cfg.Google.OAuthRedirectURL)
 
 	if cfg.Document.ChunkSize < 500 {
 		issues = append(issues, "DOCUMENT_CHUNK_SIZE must be >= 500")
@@ -160,6 +182,18 @@ func validate(cfg Config) error {
 
 	if cfg.Cache.AnalysisTTLSeconds < 30 {
 		issues = append(issues, "CACHE_ANALYSIS_TTL_SECONDS must be >= 30")
+	}
+
+	if cfg.Google.ServiceAccountFile != "" {
+		if !filepath.IsAbs(cfg.Google.ServiceAccountFile) {
+			issues = append(issues, "GOOGLE_SERVICE_ACCOUNT_FILE must be an absolute path")
+		} else if _, err := os.Stat(cfg.Google.ServiceAccountFile); err != nil {
+			issues = append(issues, fmt.Sprintf("GOOGLE_SERVICE_ACCOUNT_FILE is not readable: %v", err))
+		}
+	}
+
+	if len(cfg.Google.OAuthScopes) == 0 {
+		issues = append(issues, "GOOGLE_OAUTH_SCOPES must contain at least one scope")
 	}
 
 	if len(issues) == 0 {
@@ -188,4 +222,20 @@ func validateURL(issues *[]string, key, value string) {
 	if _, err := url.Parse(value); err != nil {
 		*issues = append(*issues, fmt.Sprintf("%s is not a valid URL: %v", key, err))
 	}
+}
+
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

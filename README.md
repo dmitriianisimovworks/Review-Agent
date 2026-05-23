@@ -42,3 +42,23 @@ docker compose ps
 ```
 
 The compose stack uses an internal-only Docker network and does not publish ports externally yet.
+
+## Google Docs ingestion
+
+`POST /api/v1/analyses` also supports Google Docs as a source:
+
+```json
+{
+  "source": "google_docs",
+  "mode": "full_review",
+  "google_doc_url": "https://docs.google.com/document/d/your-doc-id/edit"
+}
+```
+
+The backend reads the document through a Google service account configured via:
+
+- `GOOGLE_SERVICE_ACCOUNT_FILE`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_REDIRECT_URL`
+- `GOOGLE_OAUTH_SCOPES`

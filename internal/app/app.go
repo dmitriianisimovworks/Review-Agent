@@ -58,6 +58,12 @@ func New() (*App, error) {
 	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
 	promptBuilder := prompt.NewDefaultBuilder()
 	llmClient := llm.NewOpenAICompatibleClient(cfg.LLM, promptBuilder)
+	documentReader, err := google.NewServiceAccountReader(ctx, cfg.Google.ServiceAccountFile)
+	if err != nil {
+		redisClient.Close()
+		pgPool.Close()
+		return nil, err
+	}
 	docsPublisher := google.NewNoopCommentPublisher()
 
 	analysisService := service.NewAnalysisService(
@@ -66,6 +72,7 @@ func New() (*App, error) {
 		analysisCache,
 		documentParser,
 		llmClient,
+		documentReader,
 		docsPublisher,
 		cfg.LLM.Provider,
 		cfg.LLM.Model,

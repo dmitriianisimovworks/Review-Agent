@@ -21,16 +21,18 @@ type AnalysisService struct {
 	analysisCache    repository.AnalysisCache
 	documentParser   parser.DocumentParser
 	llmClient        llm.Client
+	documentReader   google.DocumentReader
 	commentPublisher google.CommentPublisher
 	llmProvider      string
 	llmModel         string
 }
 
 type StartAnalysisInput struct {
-	Name    string
-	Content string
-	Source  domain.DocumentSource
-	Mode    domain.AnalysisMode
+	Name         string
+	Content      string
+	GoogleDocURL string
+	Source       domain.DocumentSource
+	Mode         domain.AnalysisMode
 }
 
 func NewAnalysisService(
@@ -39,6 +41,7 @@ func NewAnalysisService(
 	analysisCache repository.AnalysisCache,
 	documentParser parser.DocumentParser,
 	llmClient llm.Client,
+	documentReader google.DocumentReader,
 	commentPublisher google.CommentPublisher,
 	llmProvider string,
 	llmModel string,
@@ -49,6 +52,7 @@ func NewAnalysisService(
 		analysisCache:    analysisCache,
 		documentParser:   documentParser,
 		llmClient:        llmClient,
+		documentReader:   documentReader,
 		commentPublisher: commentPublisher,
 		llmProvider:      llmProvider,
 		llmModel:         llmModel,
@@ -56,10 +60,6 @@ func NewAnalysisService(
 }
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
-	if strings.TrimSpace(input.Content) == "" {
-		return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
-	}
-
 	now := time.Now().UTC()
 	source := input.Source
 	if source == "" {
@@ -70,11 +70,39 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		mode = domain.AnalysisModeFullReview
 	}
 
+	content := strings.TrimSpace(input.Content)
+	documentName := strings.TrimSpace(input.Name)
+	externalID := ""
+
+	if source == domain.DocumentSourceGoogleDocs {
+		if s.documentReader == nil {
+			return domain.Analysis{}, apperrors.New(apperrors.KindInternal, "google docs reader is not configured")
+		}
+		if strings.TrimSpace(input.GoogleDocURL) == "" {
+			return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "google_doc_url is required for google_docs source")
+		}
+
+		doc, err := s.documentReader.Read(ctx, input.GoogleDocURL)
+		if err != nil {
+			return domain.Analysis{}, apperrors.Wrap(apperrors.KindDependency, "failed to read google document", err)
+		}
+		content = doc.Content
+		externalID = doc.ExternalID
+		if documentName == "" {
+			documentName = doc.Title
+		}
+	}
+
+	if content == "" {
+		return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
+	}
+
 	document := domain.Document{
 		ID:         fmt.Sprintf("doc_%d", now.UnixNano()),
-		Name:       input.Name,
+		Name:       documentName,
 		Source:     source,
-		RawContent: input.Content,
+		ExternalID: externalID,
+		RawContent: content,
 		CreatedAt:  now,
 	}
 
