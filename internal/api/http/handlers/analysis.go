@@ -24,6 +24,7 @@ type StartAnalysisRequest struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 	Source  string `json:"source"`
+	Mode    string `json:"mode"`
 }
 
 type AnalysisResponse struct {
@@ -58,6 +59,7 @@ func (h *AnalysisHandler) Start(w http.ResponseWriter, r *http.Request) {
 		Name:    req.Name,
 		Content: req.Content,
 		Source:  domain.DocumentSource(req.Source),
+		Mode:    domain.AnalysisMode(req.Mode),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

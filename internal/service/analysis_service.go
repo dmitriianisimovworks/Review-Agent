@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"technical-specification-review-agent/internal/domain"
@@ -15,79 +18,187 @@ import (
 type AnalysisService struct {
 	documentRepo     repository.DocumentRepository
 	analysisRepo     repository.AnalysisRepository
+	analysisCache    repository.AnalysisCache
 	documentParser   parser.DocumentParser
 	llmClient        llm.Client
 	commentPublisher google.CommentPublisher
+	llmProvider      string
+	llmModel         string
 }
 
 type StartAnalysisInput struct {
 	Name    string
 	Content string
 	Source  domain.DocumentSource
+	Mode    domain.AnalysisMode
 }
 
 func NewAnalysisService(
 	documentRepo repository.DocumentRepository,
 	analysisRepo repository.AnalysisRepository,
+	analysisCache repository.AnalysisCache,
 	documentParser parser.DocumentParser,
 	llmClient llm.Client,
 	commentPublisher google.CommentPublisher,
+	llmProvider string,
+	llmModel string,
 ) *AnalysisService {
 	return &AnalysisService{
 		documentRepo:     documentRepo,
 		analysisRepo:     analysisRepo,
+		analysisCache:    analysisCache,
 		documentParser:   documentParser,
 		llmClient:        llmClient,
 		commentPublisher: commentPublisher,
+		llmProvider:      llmProvider,
+		llmModel:         llmModel,
 	}
 }
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
+	if strings.TrimSpace(input.Content) == "" {
+		return domain.Analysis{}, errors.New("document content is required")
+	}
+
 	now := time.Now().UTC()
+	source := input.Source
+	if source == "" {
+		source = domain.DocumentSourceUpload
+	}
+	mode := input.Mode
+	if mode == "" {
+		mode = domain.AnalysisModeFullReview
+	}
 
 	document := domain.Document{
-		ID:        fmt.Sprintf("doc_%d", now.UnixNano()),
-		Name:      input.Name,
-		Source:    input.Source,
-		Content:   input.Content,
-		CreatedAt: now,
+		ID:         fmt.Sprintf("doc_%d", now.UnixNano()),
+		Name:       input.Name,
+		Source:     source,
+		RawContent: input.Content,
+		CreatedAt:  now,
 	}
+
+	parsed, err := s.documentParser.Parse(ctx, document.RawContent)
+	if err != nil {
+		return domain.Analysis{}, err
+	}
+	document.NormalizedContent = parsed.Text
 
 	if err := s.documentRepo.Save(ctx, document); err != nil {
 		return domain.Analysis{}, err
 	}
 
-	parsed, err := s.documentParser.Parse(ctx, document.Content)
-	if err != nil {
-		return domain.Analysis{}, err
-	}
+	aggregatedFindings := make([]domain.Finding, 0)
+	chunks := make([]domain.AnalysisChunk, 0, len(parsed.Chunks))
+	for idx, chunk := range parsed.Chunks {
+		result, err := s.llmClient.AnalyzeChunk(ctx, llm.AnalyzeInput{
+			DocumentName: document.Name,
+			DocumentText: parsed.Text,
+			ChunkText:    chunk,
+			ChunkIndex:   idx,
+			ChunkCount:   len(parsed.Chunks),
+			Mode:         mode,
+			Source:       document.Source,
+		})
+		if err != nil {
+			return domain.Analysis{}, fmt.Errorf("analyze chunk %d: %w", idx+1, err)
+		}
 
-	findings, summary, err := s.llmClient.Analyze(ctx, llm.PromptInput{
-		DocumentText: parsed.Text,
-		Chunks:       parsed.Chunks,
-	})
-	if err != nil {
-		return domain.Analysis{}, err
+		chunks = append(chunks, domain.AnalysisChunk{
+			ID:             fmt.Sprintf("chunk_%d_%d", now.UnixNano(), idx),
+			ChunkIndex:     idx,
+			ChunkText:      chunk,
+			PromptVersion:  result.PromptVersion,
+			SystemPrompt:   result.SystemPrompt,
+			UserPrompt:     result.UserPrompt,
+			RawLLMResponse: result.RawResponse,
+			CreatedAt:      time.Now().UTC(),
+		})
+		aggregatedFindings = append(aggregatedFindings, result.Findings...)
 	}
 
 	completedAt := time.Now().UTC()
 	analysis := domain.Analysis{
 		ID:          fmt.Sprintf("analysis_%d", completedAt.UnixNano()),
 		DocumentID:  document.ID,
+		Mode:        mode,
 		Status:      domain.AnalysisStatusCompleted,
-		Findings:    findings,
-		Summary:     summary,
+		Provider:    s.llmProvider,
+		Model:       s.llmModel,
+		ChunkCount:  len(parsed.Chunks),
+		Findings:    aggregatedFindings,
+		Chunks:      chunks,
+		Summary:     buildSummary(aggregatedFindings, len(parsed.Chunks)),
 		CreatedAt:   now,
 		CompletedAt: &completedAt,
+	}
+	for i := range analysis.Chunks {
+		analysis.Chunks[i].AnalysisID = analysis.ID
 	}
 
 	if err := s.analysisRepo.Save(ctx, analysis); err != nil {
 		return domain.Analysis{}, err
+	}
+	if s.analysisCache != nil {
+		_ = s.analysisCache.Set(ctx, analysis)
 	}
 
 	return analysis, nil
 }
 
 func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.Analysis, error) {
-	return s.analysisRepo.GetByID(ctx, id)
+	if s.analysisCache != nil {
+		analysis, found, err := s.analysisCache.Get(ctx, id)
+		if err == nil && found {
+			return analysis, nil
+		}
+	}
+
+	analysis, err := s.analysisRepo.GetByID(ctx, id)
+	if err != nil {
+		return domain.Analysis{}, err
+	}
+	if s.analysisCache != nil {
+		_ = s.analysisCache.Set(ctx, analysis)
+	}
+	return analysis, nil
+}
+
+func buildSummary(findings []domain.Finding, chunkCount int) string {
+	if len(findings) == 0 {
+		return fmt.Sprintf("Review completed across %d chunks. No substantial issues were detected.", chunkCount)
+	}
+
+	severityCounts := map[domain.Severity]int{}
+	categoryCounts := map[string]int{}
+	for _, finding := range findings {
+		severityCounts[finding.Severity]++
+		categoryCounts[finding.Category]++
+	}
+
+	topCategories := make([]string, 0, len(categoryCounts))
+	for category := range categoryCounts {
+		topCategories = append(topCategories, category)
+	}
+
+	sort.Slice(topCategories, func(i, j int) bool {
+		if categoryCounts[topCategories[i]] == categoryCounts[topCategories[j]] {
+			return topCategories[i] < topCategories[j]
+		}
+		return categoryCounts[topCategories[i]] > categoryCounts[topCategories[j]]
+	})
+
+	if len(topCategories) > 3 {
+		topCategories = topCategories[:3]
+	}
+
+	return fmt.Sprintf(
+		"Review completed across %d chunks. Findings: %d total, %d critical, %d errors, %d warnings. Main categories: %s.",
+		chunkCount,
+		len(findings),
+		severityCounts[domain.SeverityCritical],
+		severityCounts[domain.SeverityError],
+		severityCounts[domain.SeverityWarning],
+		strings.Join(topCategories, ", "),
+	)
 }

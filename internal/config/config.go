@@ -3,11 +3,12 @@ package config
 import "os"
 
 type Config struct {
-	App   AppConfig
-	HTTP  HTTPConfig
-	LLM   LLMConfig
-	Redis RedisConfig
-	DB    DatabaseConfig
+	App      AppConfig
+	HTTP     HTTPConfig
+	LLM      LLMConfig
+	Redis    RedisConfig
+	DB       DatabaseConfig
+	Document DocumentConfig
 }
 
 type AppConfig struct {
@@ -26,6 +27,7 @@ type LLMConfig struct {
 	BaseURL  string
 	APIKey   string
 	Model    string
+	Timeout  int
 }
 
 type RedisConfig struct {
@@ -34,6 +36,11 @@ type RedisConfig struct {
 
 type DatabaseConfig struct {
 	URL string
+}
+
+type DocumentConfig struct {
+	ChunkSize int
+	MaxChunks int
 }
 
 func Load() Config {
@@ -52,12 +59,17 @@ func Load() Config {
 			BaseURL:  getEnv("LLM_BASE_URL", ""),
 			APIKey:   getEnv("LLM_API_KEY", ""),
 			Model:    getEnv("LLM_MODEL", ""),
+			Timeout:  getEnvInt("LLM_TIMEOUT_SECONDS", 90),
 		},
 		Redis: RedisConfig{
 			URL: getEnv("REDIS_URL", ""),
 		},
 		DB: DatabaseConfig{
 			URL: getEnv("DATABASE_URL", ""),
+		},
+		Document: DocumentConfig{
+			ChunkSize: getEnvInt("DOCUMENT_CHUNK_SIZE", 5000),
+			MaxChunks: getEnvInt("DOCUMENT_MAX_CHUNKS", 12),
 		},
 	}
 }
@@ -68,4 +80,25 @@ func getEnv(key, fallback string) string {
 	}
 
 	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	var parsed int
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return fallback
+		}
+		parsed = parsed*10 + int(char-'0')
+	}
+
+	if parsed <= 0 {
+		return fallback
+	}
+
+	return parsed
 }

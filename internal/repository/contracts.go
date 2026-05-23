@@ -15,3 +15,8 @@ type DocumentRepository interface {
 	Save(ctx context.Context, document domain.Document) error
 	GetByID(ctx context.Context, id string) (domain.Document, error)
 }
+
+type AnalysisCache interface {
+	Set(ctx context.Context, analysis domain.Analysis) error
+	Get(ctx context.Context, id string) (domain.Analysis, bool, error)
+}

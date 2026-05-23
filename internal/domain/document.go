@@ -10,10 +10,11 @@ const (
 )
 
 type Document struct {
-	ID         string
-	Name       string
-	Source     DocumentSource
-	ExternalID string
-	Content    string
-	CreatedAt  time.Time
+	ID                string
+	Name              string
+	Source            DocumentSource
+	ExternalID        string
+	RawContent        string
+	NormalizedContent string
+	CreatedAt         time.Time
 }
