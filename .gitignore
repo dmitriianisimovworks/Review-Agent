@@ -2,6 +2,8 @@
 .env
 .env.local
 .env.*.local
+/.cache/
+/.gopath/
 /bin/
 /tmp/
 /dist/
@@ -9,4 +11,4 @@
 /node_modules/
 /apps/web/.next/
 /apps/web/out/
-
+docs/
