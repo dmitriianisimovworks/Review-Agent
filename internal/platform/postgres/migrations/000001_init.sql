@@ -1,6 +1,3 @@
-package postgres
-
-const SchemaSQL = `
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -67,4 +64,4 @@ CREATE INDEX IF NOT EXISTS idx_analysis_chunks_analysis_run_id ON analysis_chunk
 CREATE INDEX IF NOT EXISTS idx_findings_analysis_run_id ON findings(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_category ON findings(category);
-`
+

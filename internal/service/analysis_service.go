@@ -2,12 +2,12 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"technical-specification-review-agent/internal/apperrors"
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
@@ -57,7 +57,7 @@ func NewAnalysisService(
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
 	if strings.TrimSpace(input.Content) == "" {
-		return domain.Analysis{}, errors.New("document content is required")
+		return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
 	}
 
 	now := time.Now().UTC()
@@ -80,12 +80,12 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 
 	parsed, err := s.documentParser.Parse(ctx, document.RawContent)
 	if err != nil {
-		return domain.Analysis{}, err
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
 	}
 	document.NormalizedContent = parsed.Text
 
 	if err := s.documentRepo.Save(ctx, document); err != nil {
-		return domain.Analysis{}, err
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to store document", err)
 	}
 
 	aggregatedFindings := make([]domain.Finding, 0)
@@ -101,7 +101,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 			Source:       document.Source,
 		})
 		if err != nil {
-			return domain.Analysis{}, fmt.Errorf("analyze chunk %d: %w", idx+1, err)
+			return domain.Analysis{}, apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d", idx+1), err)
 		}
 
 		chunks = append(chunks, domain.AnalysisChunk{
@@ -137,7 +137,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	if err := s.analysisRepo.Save(ctx, analysis); err != nil {
-		return domain.Analysis{}, err
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to store analysis", err)
 	}
 	if s.analysisCache != nil {
 		_ = s.analysisCache.Set(ctx, analysis)
@@ -152,11 +152,14 @@ func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.An
 		if err == nil && found {
 			return analysis, nil
 		}
+		if err != nil {
+			_ = s.analysisCache.Delete(ctx, id)
+		}
 	}
 
 	analysis, err := s.analysisRepo.GetByID(ctx, id)
 	if err != nil {
-		return domain.Analysis{}, err
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindNotFound, "analysis not found", err)
 	}
 	if s.analysisCache != nil {
 		_ = s.analysisCache.Set(ctx, analysis)

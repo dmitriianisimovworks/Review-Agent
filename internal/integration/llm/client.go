@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"technical-specification-review-agent/internal/apperrors"
 	"technical-specification-review-agent/internal/config"
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/prompt"
@@ -92,7 +93,7 @@ func NewOpenAICompatibleClient(cfg config.LLMConfig, promptBuilder prompt.Builde
 
 func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input AnalyzeInput) (ChunkAnalysisResult, error) {
 	if strings.TrimSpace(c.apiKey) == "" {
-		return ChunkAnalysisResult{}, errors.New("llm api key is not configured")
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, "llm api key is not configured")
 	}
 
 	builtPrompt := c.promptBuilder.Build(prompt.Input{
@@ -119,12 +120,12 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return ChunkAnalysisResult{}, fmt.Errorf("marshal llm request: %w", err)
+		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindInternal, "failed to build llm request", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return ChunkAnalysisResult{}, fmt.Errorf("build llm request: %w", err)
+		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindInternal, "failed to build llm request", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -132,36 +133,36 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return ChunkAnalysisResult{}, fmt.Errorf("execute llm request: %w", err)
+		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to reach llm provider", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return ChunkAnalysisResult{}, fmt.Errorf("read llm response: %w", err)
+		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to read llm response", err)
 	}
 
 	var completion chatCompletionResponse
 	if err := json.Unmarshal(respBody, &completion); err != nil {
-		return ChunkAnalysisResult{}, fmt.Errorf("decode llm response: %w", err)
+		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to decode llm response", err)
 	}
 
 	if completion.Error != nil {
-		return ChunkAnalysisResult{}, fmt.Errorf("llm api error: %s", completion.Error.Message)
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, "llm provider returned an error")
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return ChunkAnalysisResult{}, fmt.Errorf("llm status %d", resp.StatusCode)
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, fmt.Sprintf("llm provider returned status %d", resp.StatusCode))
 	}
 
 	if len(completion.Choices) == 0 {
-		return ChunkAnalysisResult{}, errors.New("llm returned no choices")
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, "llm returned no choices")
 	}
 
 	content := completion.Choices[0].Message.Content
 	parsed, err := parseChunkAnalysis(content)
 	if err != nil {
-		return ChunkAnalysisResult{}, err
+		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "llm returned invalid structured output", err)
 	}
 
 	findings := make([]domain.Finding, 0, len(parsed.Findings))

@@ -62,7 +62,7 @@ func (h *AnalysisHandler) Start(w http.ResponseWriter, r *http.Request) {
 		Mode:    domain.AnalysisMode(req.Mode),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, err)
 		return
 	}
 
@@ -74,7 +74,7 @@ func (h *AnalysisHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	analysis, err := h.analysisService.GetAnalysis(r.Context(), analysisID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "analysis not found"})
+		writeError(w, err)
 		return
 	}
 

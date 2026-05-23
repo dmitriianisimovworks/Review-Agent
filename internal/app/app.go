@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 
 	api "technical-specification-review-agent/internal/api/http"
 	"technical-specification-review-agent/internal/config"
@@ -19,11 +23,16 @@ import (
 )
 
 type App struct {
-	server *http.Server
+	server      *http.Server
+	pgPool      *pgxpool.Pool
+	redisClient *goredis.Client
 }
 
 func New() (*App, error) {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -32,19 +41,21 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	if _, err := pgPool.Exec(ctx, postgresrepo.SchemaSQL); err != nil {
+	if err := platformpostgres.RunMigrations(ctx, pgPool); err != nil {
+		pgPool.Close()
 		return nil, err
 	}
 
 	redisClient, err := platformredis.NewClient(ctx, cfg.Redis.URL)
 	if err != nil {
+		pgPool.Close()
 		return nil, err
 	}
 
 	documentParser := parser.NewChunkingParser(cfg.Document)
 	documentRepo := postgresrepo.NewDocumentRepository(pgPool)
 	analysisRepo := postgresrepo.NewAnalysisRepository(pgPool)
-	analysisCache := redisrepo.NewAnalysisCache(redisClient, 10*time.Minute)
+	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
 	promptBuilder := prompt.NewDefaultBuilder()
 	llmClient := llm.NewOpenAICompatibleClient(cfg.LLM, promptBuilder)
 	docsPublisher := google.NewNoopCommentPublisher()
@@ -70,13 +81,31 @@ func New() (*App, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return &App{server: server}, nil
+	return &App{
+		server:      server,
+		pgPool:      pgPool,
+		redisClient: redisClient,
+	}, nil
 }
 
 func (a *App) Run() error {
-	return a.server.ListenAndServe()
+	err := a.server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
-	return a.server.Shutdown(ctx)
+	var shutdownErr error
+	if err := a.server.Shutdown(ctx); err != nil {
+		shutdownErr = err
+	}
+	if a.redisClient != nil {
+		_ = a.redisClient.Close()
+	}
+	if a.pgPool != nil {
+		a.pgPool.Close()
+	}
+	return shutdownErr
 }

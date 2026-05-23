@@ -19,4 +19,5 @@ type DocumentRepository interface {
 type AnalysisCache interface {
 	Set(ctx context.Context, analysis domain.Analysis) error
 	Get(ctx context.Context, id string) (domain.Analysis, bool, error)
+	Delete(ctx context.Context, id string) error
 }
