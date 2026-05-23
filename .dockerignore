@@ -1,0 +1,14 @@
+.git
+.cache
+.gopath
+node_modules
+apps/web/.next
+apps/web/out
+docs
+bin
+tmp
+dist
+.env
+.env.local
+.env.*.local
+

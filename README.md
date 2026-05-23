@@ -32,3 +32,13 @@ go run ./cmd/api
 
 Default server address: `:8080`
 
+## Docker
+
+Local config is expected in `.env`.
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+The compose stack uses an internal-only Docker network and does not publish ports externally yet.
