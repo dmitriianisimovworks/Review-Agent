@@ -6,6 +6,8 @@ services:
     container_name: tsra-app
     env_file:
       - .env
+    volumes:
+      - /root/secrets:/root/secrets:ro
     ports:
       - "8080:8080"
     depends_on:
