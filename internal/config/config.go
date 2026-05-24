@@ -194,6 +194,9 @@ func validate(cfg Config) error {
 
 	if len(cfg.Google.OAuthScopes) == 0 {
 		issues = append(issues, "GOOGLE_OAUTH_SCOPES must contain at least one scope")
+	} else {
+		requireScope(&issues, cfg.Google.OAuthScopes, "https://www.googleapis.com/auth/userinfo.email")
+		requireScope(&issues, cfg.Google.OAuthScopes, "https://www.googleapis.com/auth/userinfo.profile")
 	}
 
 	if len(issues) == 0 {
@@ -238,4 +241,14 @@ func splitCSV(value string) []string {
 		}
 	}
 	return result
+}
+
+func requireScope(issues *[]string, scopes []string, expected string) {
+	for _, scope := range scopes {
+		if strings.EqualFold(strings.TrimSpace(scope), expected) {
+			return
+		}
+	}
+
+	*issues = append(*issues, fmt.Sprintf("GOOGLE_OAUTH_SCOPES must include %s", expected))
 }

@@ -62,3 +62,9 @@ The backend reads the document through a Google service account configured via:
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GOOGLE_OAUTH_REDIRECT_URL`
 - `GOOGLE_OAUTH_SCOPES`
+
+For the OAuth2 user flow, `GOOGLE_OAUTH_SCOPES` must include both Docs/Drive access and user identity scopes, for example:
+
+```env
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/documents,https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile
+```

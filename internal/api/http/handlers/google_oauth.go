@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"log"
 	"net/http"
 
 	"technical-specification-review-agent/internal/domain"
@@ -23,6 +24,7 @@ func NewGoogleOAuthHandler(service GoogleOAuthService) *GoogleOAuthHandler {
 func (h *GoogleOAuthHandler) Start(w http.ResponseWriter, r *http.Request) {
 	url, err := h.service.BeginAuth()
 	if err != nil {
+		log.Printf("google oauth start: %v", err)
 		writeError(w, err)
 		return
 	}
@@ -38,6 +40,7 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	connection, err := h.service.CompleteAuth(r.Context(), state, code)
 	if err != nil {
+		log.Printf("google oauth callback: state=%q code_present=%t error=%v", state, code != "", err)
 		writeError(w, err)
 		return
 	}
