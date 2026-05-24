@@ -17,7 +17,32 @@ type Document struct {
 	ReviewKey         string
 	RawContent        string
 	NormalizedContent string
+	Sections          []DocumentSection
+	Blocks            []DocumentBlock
 	CreatedAt         time.Time
+}
+
+type DocumentRange struct {
+	StartIndex int64 `json:"start_index"`
+	EndIndex   int64 `json:"end_index"`
+}
+
+type DocumentSection struct {
+	ID      string        `json:"id"`
+	Title   string        `json:"title"`
+	Level   int           `json:"level"`
+	Range   DocumentRange `json:"range"`
+	Content string        `json:"content"`
+}
+
+type DocumentBlock struct {
+	Kind         string        `json:"kind"`
+	Text         string        `json:"text"`
+	Range        DocumentRange `json:"range"`
+	HeadingLevel int           `json:"heading_level,omitempty"`
+	ListLevel    int           `json:"list_level,omitempty"`
+	SectionID    string        `json:"section_id,omitempty"`
+	SectionTitle string        `json:"section_title,omitempty"`
 }
 
 type GoogleOAuthConnection struct {

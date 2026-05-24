@@ -95,6 +95,21 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 		}
 	}
 
+	if len(analysis.DocumentSections) > 0 {
+		structurePayload, err := json.Marshal(map[string]any{
+			"sections": analysis.DocumentSections,
+		})
+		if err != nil {
+			return fmt.Errorf("marshal structure artifact: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO analysis_artifacts (id, analysis_run_id, artifact_type, payload_jsonb, created_at)
+			VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, $4)
+		`, analysis.ID, "document_structure", string(structurePayload), time.Now().UTC()); err != nil {
+			return fmt.Errorf("insert structure artifact: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit tx: %w", err)
 	}

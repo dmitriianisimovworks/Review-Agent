@@ -20,20 +20,21 @@ const (
 )
 
 type Analysis struct {
-	ID           string
-	DocumentID   string
-	Mode         AnalysisMode
-	Status       AnalysisStatus
-	Provider     string
-	Model        string
-	ChunkCount   int
-	Findings     []Finding
-	Chunks       []AnalysisChunk
-	Summary      string
-	Memory       ReviewMemory
-	ErrorMessage string
-	CreatedAt    time.Time
-	CompletedAt  *time.Time
+	ID               string
+	DocumentID       string
+	Mode             AnalysisMode
+	Status           AnalysisStatus
+	Provider         string
+	Model            string
+	ChunkCount       int
+	Findings         []Finding
+	Chunks           []AnalysisChunk
+	Summary          string
+	Memory           ReviewMemory
+	DocumentSections []DocumentSection
+	ErrorMessage     string
+	CreatedAt        time.Time
+	CompletedAt      *time.Time
 }
 
 type ReviewerRole string
@@ -75,6 +76,10 @@ type AnalysisChunk struct {
 	SystemPrompt   string
 	UserPrompt     string
 	RawLLMResponse string
+	SectionID      string
+	SectionTitle   string
+	SectionLevel   int
+	Range          DocumentRange
 	CreatedAt      time.Time
 }
 

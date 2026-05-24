@@ -63,10 +63,15 @@ func (r *ServiceAccountReader) Read(ctx context.Context, documentURL string) (Do
 		title = strings.TrimSpace(driveFile.Name)
 	}
 
+	blocks := collectBlocks(doc)
+	sections := buildSections(blocks)
+
 	return Document{
 		ExternalID: documentID,
 		Title:      title,
-		Content:    renderDocumentText(doc),
+		Content:    renderBlocksText(blocks),
+		Sections:   sections,
+		Blocks:     blocks,
 	}, nil
 }
 
@@ -95,37 +100,47 @@ func extractDocumentID(documentURL string) (string, error) {
 	return "", errors.New("could not extract google document id")
 }
 
-func renderDocumentText(doc *docs.Document) string {
+func collectBlocks(doc *docs.Document) []Block {
 	if doc == nil || doc.Body == nil {
-		return ""
+		return nil
 	}
 
-	var lines []string
+	blocks := make([]Block, 0)
 	for _, element := range doc.Body.Content {
-		appendStructuralElement(&lines, element)
+		appendStructuralElement(&blocks, element)
 	}
 
-	return strings.TrimSpace(strings.Join(compactLines(lines), "\n"))
+	return compactBlocks(blocks)
 }
 
-func appendStructuralElement(lines *[]string, element *docs.StructuralElement) {
+func appendStructuralElement(blocks *[]Block, element *docs.StructuralElement) {
 	if element == nil {
 		return
 	}
 
 	if element.Paragraph != nil {
-		text := paragraphText(element.Paragraph)
-		if text != "" {
-			*lines = append(*lines, text)
+		block := paragraphBlock(element.Paragraph, element.StartIndex, element.EndIndex)
+		if strings.TrimSpace(block.Text) != "" {
+			*blocks = append(*blocks, block)
 		}
 		return
 	}
 
 	if element.Table != nil {
-		for _, row := range element.Table.TableRows {
-			for _, cell := range row.TableCells {
+		for rowIdx, row := range element.Table.TableRows {
+			for cellIdx, cell := range row.TableCells {
 				for _, content := range cell.Content {
-					appendStructuralElement(lines, content)
+					appendStructuralElement(blocks, content)
+				}
+				if rowIdx >= 0 && cellIdx >= 0 {
+					*blocks = append(*blocks, Block{
+						Kind: "table_cell_break",
+						Text: "",
+						Range: Range{
+							StartIndex: element.StartIndex,
+							EndIndex:   element.EndIndex,
+						},
+					})
 				}
 			}
 		}
@@ -134,14 +149,21 @@ func appendStructuralElement(lines *[]string, element *docs.StructuralElement) {
 
 	if element.TableOfContents != nil {
 		for _, content := range element.TableOfContents.Content {
-			appendStructuralElement(lines, content)
+			appendStructuralElement(blocks, content)
 		}
 	}
 }
 
-func paragraphText(paragraph *docs.Paragraph) string {
+func paragraphBlock(paragraph *docs.Paragraph, startIndex, endIndex int64) Block {
+	block := Block{
+		Kind: "paragraph",
+		Range: Range{
+			StartIndex: startIndex,
+			EndIndex:   endIndex,
+		},
+	}
 	if paragraph == nil {
-		return ""
+		return block
 	}
 
 	var builder strings.Builder
@@ -151,23 +173,135 @@ func paragraphText(paragraph *docs.Paragraph) string {
 		}
 		builder.WriteString(element.TextRun.Content)
 	}
+	block.Text = strings.TrimSpace(builder.String())
 
-	return strings.TrimSpace(builder.String())
+	if paragraph.Bullet != nil {
+		block.Kind = "list_item"
+		block.ListLevel = int(paragraph.Bullet.NestingLevel)
+	}
+
+	if level, isHeading := headingLevel(paragraph.ParagraphStyle); isHeading {
+		block.Kind = "heading"
+		block.HeadingLevel = level
+	}
+
+	return block
 }
 
-func compactLines(lines []string) []string {
-	result := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			if len(result) == 0 || result[len(result)-1] == "" {
-				continue
-			}
-			result = append(result, "")
+func headingLevel(style *docs.ParagraphStyle) (int, bool) {
+	if style == nil {
+		return 0, false
+	}
+
+	switch style.NamedStyleType {
+	case "TITLE":
+		return 0, true
+	case "HEADING_1":
+		return 1, true
+	case "HEADING_2":
+		return 2, true
+	case "HEADING_3":
+		return 3, true
+	case "HEADING_4":
+		return 4, true
+	case "HEADING_5":
+		return 5, true
+	case "HEADING_6":
+		return 6, true
+	default:
+		return 0, false
+	}
+}
+
+func compactBlocks(blocks []Block) []Block {
+	result := make([]Block, 0, len(blocks))
+	for _, block := range blocks {
+		if strings.TrimSpace(block.Text) == "" {
 			continue
 		}
-		result = append(result, strings.Join(strings.Fields(trimmed), " "))
+		block.Text = strings.Join(strings.Fields(block.Text), " ")
+		result = append(result, block)
 	}
 	return result
 }
 
+func renderBlocksText(blocks []Block) string {
+	lines := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		text := strings.TrimSpace(block.Text)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, text)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n\n"))
+}
+
+func buildSections(blocks []Block) []Section {
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	sections := make([]Section, 0)
+	current := Section{
+		ID:    "section_0",
+		Title: "Document",
+		Level: 0,
+		Range: Range{
+			StartIndex: blocks[0].Range.StartIndex,
+		},
+	}
+	contentParts := make([]string, 0)
+
+	flush := func(endIndex int64) {
+		if strings.TrimSpace(strings.Join(contentParts, "\n\n")) == "" {
+			return
+		}
+		current.Content = strings.TrimSpace(strings.Join(contentParts, "\n\n"))
+		current.Range.EndIndex = endIndex
+		sections = append(sections, current)
+	}
+
+	sectionCounter := 0
+	for _, block := range blocks {
+		if block.Kind == "heading" {
+			if len(contentParts) > 0 {
+				flush(block.Range.StartIndex)
+				contentParts = contentParts[:0]
+			}
+			sectionCounter++
+			current = Section{
+				ID:    fmt.Sprintf("section_%d", sectionCounter),
+				Title: block.Text,
+				Level: block.HeadingLevel,
+				Range: Range{
+					StartIndex: block.Range.StartIndex,
+				},
+			}
+			contentParts = append(contentParts, block.Text)
+			continue
+		}
+
+		contentParts = append(contentParts, block.Text)
+	}
+
+	if len(contentParts) > 0 {
+		flush(blocks[len(blocks)-1].Range.EndIndex)
+	}
+
+	annotateBlocksWithSections(blocks, sections)
+	return sections
+}
+
+func annotateBlocksWithSections(blocks []Block, sections []Section) {
+	for sectionIdx := range sections {
+		section := &sections[sectionIdx]
+		for blockIdx := range blocks {
+			block := &blocks[blockIdx]
+			if block.Range.StartIndex >= section.Range.StartIndex && block.Range.EndIndex <= section.Range.EndIndex {
+				block.SectionID = section.ID
+				block.SectionTitle = section.Title
+			}
+		}
+	}
+}

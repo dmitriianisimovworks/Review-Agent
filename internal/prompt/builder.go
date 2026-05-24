@@ -13,6 +13,8 @@ type Input struct {
 	ChunkText    string
 	ChunkIndex   int
 	ChunkCount   int
+	SectionTitle string
+	SectionLevel int
 	Mode         domain.AnalysisMode
 	Source       domain.DocumentSource
 	Role         domain.ReviewerRole
@@ -99,13 +101,14 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 `, roleDisplayName(role), roleInstructions(role), role))
 
 	user := fmt.Sprintf(
-		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON.\n\n%s",
+		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s%s\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON.\n\n%s",
 		mode,
 		defaultString(string(input.Source), string(domain.DocumentSourceUpload)),
 		defaultString(input.DocumentName, "unnamed_document"),
 		roleDisplayName(role),
 		input.ChunkIndex+1,
 		maxInt(input.ChunkCount, 1),
+		formatSectionContext(input.SectionTitle, input.SectionLevel),
 		formatMemorySection(input.Memory, role),
 		input.ChunkText,
 	)
@@ -260,6 +263,17 @@ func limitStrings(values []string, limit int) []string {
 		return values
 	}
 	return values[:limit]
+}
+
+func formatSectionContext(title string, level int) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	if level > 0 {
+		return fmt.Sprintf("Раздел документа: %s (heading level %d)\n", title, level)
+	}
+	return fmt.Sprintf("Раздел документа: %s\n", title)
 }
 
 var _ Builder = (*DefaultBuilder)(nil)

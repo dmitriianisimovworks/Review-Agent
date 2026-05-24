@@ -6,6 +6,31 @@ type Document struct {
 	ExternalID string
 	Title      string
 	Content    string
+	Sections   []Section
+	Blocks     []Block
+}
+
+type Range struct {
+	StartIndex int64
+	EndIndex   int64
+}
+
+type Section struct {
+	ID      string
+	Title   string
+	Level   int
+	Range   Range
+	Content string
+}
+
+type Block struct {
+	Kind         string
+	Text         string
+	Range        Range
+	HeadingLevel int
+	ListLevel    int
+	SectionID    string
+	SectionTitle string
 }
 
 type DocumentReader interface {

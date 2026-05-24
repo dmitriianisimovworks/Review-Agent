@@ -23,6 +23,8 @@ type AnalyzeInput struct {
 	ChunkText    string
 	ChunkIndex   int
 	ChunkCount   int
+	SectionTitle string
+	SectionLevel int
 	Mode         domain.AnalysisMode
 	Source       domain.DocumentSource
 	Role         domain.ReviewerRole
@@ -104,6 +106,8 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 		ChunkText:    input.ChunkText,
 		ChunkIndex:   input.ChunkIndex,
 		ChunkCount:   input.ChunkCount,
+		SectionTitle: input.SectionTitle,
+		SectionLevel: input.SectionLevel,
 		Mode:         input.Mode,
 		Source:       input.Source,
 		Role:         input.Role,

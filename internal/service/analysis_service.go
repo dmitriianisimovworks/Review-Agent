@@ -79,6 +79,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	documentName := strings.TrimSpace(input.Name)
 	externalID := ""
 	reviewKey := strings.TrimSpace(input.ContextKey)
+	var structuredDoc google.Document
 
 	if source == domain.DocumentSourceGoogleDocs {
 		if s.documentReader == nil {
@@ -92,6 +93,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		if err != nil {
 			return domain.Analysis{}, apperrors.Wrap(apperrors.KindDependency, "failed to read google document", err)
 		}
+		structuredDoc = doc
 		content = doc.Content
 		externalID = doc.ExternalID
 		if documentName == "" {
@@ -117,10 +119,15 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		ExternalID: externalID,
 		ReviewKey:  reviewKey,
 		RawContent: content,
+		Sections:   toDomainSections(structuredDoc.Sections),
+		Blocks:     toDomainBlocks(structuredDoc.Blocks),
 		CreatedAt:  now,
 	}
 
-	parsed, err := s.documentParser.Parse(ctx, document.RawContent)
+	parsed, err := s.documentParser.Parse(ctx, parser.ParseInput{
+		Content:  document.RawContent,
+		Sections: document.Sections,
+	})
 	if err != nil {
 		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
 	}
@@ -139,19 +146,20 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 
 	completedAt := time.Now().UTC()
 	analysis := domain.Analysis{
-		ID:          fmt.Sprintf("analysis_%d", completedAt.UnixNano()),
-		DocumentID:  document.ID,
-		Mode:        mode,
-		Status:      domain.AnalysisStatusCompleted,
-		Provider:    s.llmProvider,
-		Model:       s.llmModel,
-		ChunkCount:  len(parsed.Chunks),
-		Findings:    aggregatedFindings,
-		Chunks:      chunks,
-		Summary:     buildSummary(aggregatedFindings, len(parsed.Chunks)),
-		Memory:      memory,
-		CreatedAt:   now,
-		CompletedAt: &completedAt,
+		ID:               fmt.Sprintf("analysis_%d", completedAt.UnixNano()),
+		DocumentID:       document.ID,
+		Mode:             mode,
+		Status:           domain.AnalysisStatusCompleted,
+		Provider:         s.llmProvider,
+		Model:            s.llmModel,
+		ChunkCount:       len(parsed.Chunks),
+		Findings:         aggregatedFindings,
+		Chunks:           chunks,
+		Summary:          buildSummary(aggregatedFindings, len(parsed.Chunks)),
+		Memory:           memory,
+		DocumentSections: parsed.Sections,
+		CreatedAt:        now,
+		CompletedAt:      &completedAt,
 	}
 	for i := range analysis.Chunks {
 		analysis.Chunks[i].AnalysisID = analysis.ID
@@ -192,6 +200,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 			idx := idx
 			chunkText := chunkText
 			role := role
+			descriptor := parsedChunkDescriptor(parsed, idx)
 
 			g.Go(func() error {
 				result, err := s.llmClient.AnalyzeChunk(groupCtx, llm.AnalyzeInput{
@@ -200,6 +209,8 @@ func (s *AnalysisService) analyzeChunksByRoles(
 					ChunkText:    chunkText,
 					ChunkIndex:   idx,
 					ChunkCount:   len(parsed.Chunks),
+					SectionTitle: descriptor.SectionTitle,
+					SectionLevel: descriptor.SectionLevel,
 					Mode:         mode,
 					Source:       document.Source,
 					Role:         role,
@@ -219,6 +230,10 @@ func (s *AnalysisService) analyzeChunksByRoles(
 						SystemPrompt:   result.SystemPrompt,
 						UserPrompt:     result.UserPrompt,
 						RawLLMResponse: result.RawResponse,
+						SectionID:      descriptor.SectionID,
+						SectionTitle:   descriptor.SectionTitle,
+						SectionLevel:   descriptor.SectionLevel,
+						Range:          descriptor.Range,
 						CreatedAt:      time.Now().UTC(),
 					},
 					findings: result.Findings,
@@ -449,4 +464,44 @@ func normalizeKeyPart(value string) string {
 	value = strings.ReplaceAll(value, "\t", " ")
 	value = strings.Join(strings.Fields(value), "_")
 	return value
+}
+
+func parsedChunkDescriptor(parsed parser.ParsedDocument, idx int) parser.ParsedChunk {
+	if idx >= 0 && idx < len(parsed.ChunkDescriptors) {
+		return parsed.ChunkDescriptors[idx]
+	}
+	return parser.ParsedChunk{}
+}
+
+func toDomainSections(sections []google.Section) []domain.DocumentSection {
+	result := make([]domain.DocumentSection, 0, len(sections))
+	for _, section := range sections {
+		result = append(result, domain.DocumentSection{
+			ID:    section.ID,
+			Title: section.Title,
+			Level: section.Level,
+			Range: domain.DocumentRange{
+				StartIndex: section.Range.StartIndex,
+				EndIndex:   section.Range.EndIndex,
+			},
+			Content: section.Content,
+		})
+	}
+	return result
+}
+
+func toDomainBlocks(blocks []google.Block) []domain.DocumentBlock {
+	result := make([]domain.DocumentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		result = append(result, domain.DocumentBlock{
+			Kind:         block.Kind,
+			Text:         block.Text,
+			Range:        domain.DocumentRange{StartIndex: block.Range.StartIndex, EndIndex: block.Range.EndIndex},
+			HeadingLevel: block.HeadingLevel,
+			ListLevel:    block.ListLevel,
+			SectionID:    block.SectionID,
+			SectionTitle: block.SectionTitle,
+		})
+	}
+	return result
 }
