@@ -17,6 +17,7 @@ func TestDefaultFormatter_Format(t *testing.T) {
 		Summary: "Анализ завершён.",
 		Findings: []domain.Finding{
 			{
+				Role:        string(domain.ReviewerRoleSeniorBackendEngineer),
 				Severity:    domain.SeverityCritical,
 				Problem:     "Не описано удаление связанных данных.",
 				WhyItIsBad:  "Возможна потеря согласованности.",
@@ -36,8 +37,8 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	if inline.AnchorLine == nil || *inline.AnchorLine < 1 {
 		t.Fatalf("expected anchor line to be detected")
 	}
-	if !strings.Contains(inline.Content, "Проблема:") || !strings.Contains(inline.Content, "Как исправить:") {
-		t.Fatalf("inline draft does not follow required format: %q", inline.Content)
+	if !strings.Contains(inline.Content, "🧱 Senior Backend Engineer") || !strings.Contains(inline.Content, "Ключевые замечания:") {
+		t.Fatalf("inline draft does not follow role-based format: %q", inline.Content)
 	}
 
 	summary := drafts[1]
@@ -85,18 +86,14 @@ func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
 	}
 	analysis := domain.Analysis{
 		Findings: []domain.Finding{
-			{Severity: domain.SeverityError, Category: "missing_requirement", Problem: "Не определены финальные статусы кейса."},
-			{Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не описано ограничение на повторные эскалации."},
-			{Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не описаны правила редактирования комментариев."},
-			{Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не указан формат экспорта отчётов."},
+			{Role: string(domain.ReviewerRoleTechLead), Severity: domain.SeverityError, Category: "missing_requirement", Problem: "Не определены финальные статусы кейса."},
+			{Role: string(domain.ReviewerRoleTechLead), Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не описано ограничение на повторные эскалации."},
+			{Role: string(domain.ReviewerRoleQAReviewer), Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не описаны правила редактирования комментариев."},
+			{Role: string(domain.ReviewerRoleDevOpsReviewer), Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не указан формат экспорта отчётов."},
 		},
 	}
 
-	inline := []domain.Finding{
-		analysis.Findings[0],
-	}
-
-	drafts := buildSummaryDrafts(document, analysis, inline)
+	drafts := buildSummaryDrafts(document, analysis)
 	if len(drafts) != 1 {
 		t.Fatalf("expected 1 summary draft, got %d", len(drafts))
 	}
@@ -110,5 +107,50 @@ func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
 	}
 	if !strings.Contains(content, "- ") {
 		t.Fatalf("summary should contain grouped bullet points: %q", content)
+	}
+}
+
+func TestBuildRoleDraftsCreatesSingleCommentPerRole(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Строка 1\n\nСтрока 2\n\nСтрока 3",
+	}
+	findings := []domain.Finding{
+		{
+			Role:        string(domain.ReviewerRoleTechLead),
+			Severity:    domain.SeverityCritical,
+			Problem:     "Проблема 1",
+			WhyItIsBad:  "Последствие 1",
+			HowToFix:    "Исправление 1",
+			SourceChunk: "Строка 1",
+		},
+		{
+			Role:        string(domain.ReviewerRoleTechLead),
+			Severity:    domain.SeverityError,
+			Problem:     "Проблема 2",
+			WhyItIsBad:  "Последствие 2",
+			HowToFix:    "Исправление 2",
+			SourceChunk: "Строка 1",
+		},
+		{
+			Role:        string(domain.ReviewerRoleQAReviewer),
+			Severity:    domain.SeverityWarning,
+			Problem:     "Проблема 3",
+			WhyItIsBad:  "Последствие 3",
+			HowToFix:    "Исправление 3",
+			SourceChunk: "Строка 2",
+		},
+	}
+
+	drafts := buildRoleDrafts(document, findings)
+	if len(drafts) != 2 {
+		t.Fatalf("expected 2 role drafts, got %d", len(drafts))
+	}
+	if !strings.Contains(drafts[0].Content, "🧭 Tech Lead") {
+		t.Fatalf("expected tech lead header, got %q", drafts[0].Content)
+	}
+	if !strings.Contains(drafts[1].Content, "🧪 QA Reviewer") {
+		t.Fatalf("expected qa reviewer header, got %q", drafts[1].Content)
 	}
 }

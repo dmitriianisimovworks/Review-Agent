@@ -61,7 +61,9 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 Не давай общих советов без конкретики.
 Фокусируйся на замечаниях, которые действительно относятся к твоей роли.
 Верни максимум 5 замечаний.
-Старайся вернуть 3 самых сильных замечания, если этого достаточно.
+Старайся вернуть от 2 до 5 самых сильных замечаний.
+Если видишь только одну сильную проблему, попробуй выделить ещё хотя бы одну независимую проблему в рамках своей роли.
+Не выдумывай замечания ради количества.
 Не дублируй одно и то же замечание разными формулировками.
 Приоритизируй CRITICAL, затем ERROR, затем WARNING.
 
@@ -85,6 +87,7 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 - severity должен быть одним из: INFO, WARNING, ERROR, CRITICAL;
 - category должна быть одной из: ambiguity, missing_requirement, contradiction, technical_risk, ux_problem, api_problem, frontend_risk, security_risk, devops_risk, scalability_risk;
 - findings должны быть конкретно привязаны к переданному фрагменту;
+- findings желательно должно быть не меньше 2, если в рамках роли есть хотя бы две независимые значимые проблемы;
 - findings должно быть не больше 5;
 - если существенных проблем нет, верни {"findings":[]}.
 `, roleDisplayName(role), roleInstructions(role), role))

@@ -39,30 +39,55 @@ const (
 	maxTotalInlineComments   = 7
 	maxSummaryThemes         = 4
 	maxThemeExamples         = 2
+	maxRoleCommentFindings   = 3
 )
 
 func (f *DefaultFormatter) Format(document domain.Document, analysis domain.Analysis, mode PublishMode) []Draft {
 	switch mode {
 	case PublishModeInline:
-		return buildInlineDrafts(document, selectInlineFindings(analysis.Findings))
+		return buildRoleDrafts(document, analysis.Findings)
 	case PublishModeSummary:
-		return buildSummaryDrafts(document, analysis, selectInlineFindings(analysis.Findings))
+		return buildSummaryDrafts(document, analysis)
 	default:
-		inlineFindings := selectInlineFindings(analysis.Findings)
-		drafts := buildInlineDrafts(document, inlineFindings)
-		return append(drafts, buildSummaryDrafts(document, analysis, inlineFindings)...)
+		drafts := buildRoleDrafts(document, analysis.Findings)
+		return append(drafts, buildSummaryDrafts(document, analysis)...)
 	}
 }
 
-func buildInlineDrafts(document domain.Document, findings []domain.Finding) []Draft {
-	drafts := make([]Draft, 0, len(findings))
-	for _, finding := range findings {
+func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draft {
+	grouped := groupFindingsByRole(findings)
+	order := domain.DefaultReviewerRoles()
+
+	drafts := make([]Draft, 0, len(grouped))
+	for _, role := range order {
+		roleFindings := grouped[string(role)]
+		if len(roleFindings) == 0 {
+			continue
+		}
+
+		sort.SliceStable(roleFindings, func(i, j int) bool {
+			left := severityRank(roleFindings[i].Severity)
+			right := severityRank(roleFindings[j].Severity)
+			if left == right {
+				if roleFindings[i].Category == roleFindings[j].Category {
+					return roleFindings[i].Problem < roleFindings[j].Problem
+				}
+				return roleFindings[i].Category < roleFindings[j].Category
+			}
+			return left > right
+		})
+
+		if len(roleFindings) > maxRoleCommentFindings {
+			roleFindings = roleFindings[:maxRoleCommentFindings]
+		}
+
+		topFinding := roleFindings[0]
 		draft := Draft{
 			Type:          "inline",
-			Content:       formatFinding(finding),
-			QuotedContent: quoteForComment(finding.SourceChunk),
+			Content:       formatRoleComment(string(role), roleFindings),
+			QuotedContent: quoteForComment(topFinding.SourceChunk),
 		}
-		if line := findAnchorLine(document.NormalizedContent, finding.SourceChunk); line != nil {
+		if line := findAnchorLine(document.NormalizedContent, topFinding.SourceChunk); line != nil {
 			draft.AnchorLine = line
 		}
 		drafts = append(drafts, draft)
@@ -70,7 +95,7 @@ func buildInlineDrafts(document domain.Document, findings []domain.Finding) []Dr
 	return drafts
 }
 
-func buildSummaryDrafts(document domain.Document, analysis domain.Analysis, publishedInline []domain.Finding) []Draft {
+func buildSummaryDrafts(document domain.Document, analysis domain.Analysis) []Draft {
 	endLine := endAnchorLine(document.NormalizedContent)
 
 	if len(analysis.Findings) == 0 {
@@ -81,37 +106,14 @@ func buildSummaryDrafts(document domain.Document, analysis domain.Analysis, publ
 		}}
 	}
 
-	findings := append([]domain.Finding(nil), analysis.Findings...)
-	sort.SliceStable(findings, func(i, j int) bool {
-		left := severityRank(findings[i].Severity)
-		right := severityRank(findings[j].Severity)
-		if left == right {
-			return findings[i].Category < findings[j].Category
-		}
-		return left > right
-	})
-
-	inlineKeys := make(map[string]struct{}, len(publishedInline))
-	for _, finding := range publishedInline {
-		inlineKeys[findingKey(finding)] = struct{}{}
-	}
-
-	remaining := make([]domain.Finding, 0, len(findings))
-	for _, finding := range findings {
-		if _, exists := inlineKeys[findingKey(finding)]; exists {
-			continue
-		}
-		remaining = append(remaining, finding)
-	}
-
 	lines := []string{
 		"Итоговый комментарий",
 		"",
 		compactSummary(analysis.Findings),
 	}
 
-	if len(remaining) > 0 {
-		groups := groupFindingsByTheme(remaining)
+	if len(analysis.Findings) > 0 {
+		groups := groupFindingsByTheme(analysis.Findings)
 		if len(groups) > 0 {
 			lines = append(lines, "", "Дополнительно:")
 			limit := min(len(groups), maxSummaryThemes)
@@ -149,6 +151,27 @@ func formatFinding(finding domain.Finding) string {
 	}, "\n")
 }
 
+func formatRoleComment(role string, findings []domain.Finding) string {
+	lines := []string{
+		fmt.Sprintf("%s %s", roleEmoji(role), roleLabel(role)),
+		"",
+		"Ключевые замечания:",
+	}
+
+	for idx, finding := range findings {
+		lines = append(lines,
+			fmt.Sprintf("%d. [%s] %s", idx+1, finding.Severity, strings.TrimSpace(finding.Problem)),
+			"Почему это плохо:",
+			strings.TrimSpace(finding.WhyItIsBad),
+			"Как исправить:",
+			strings.TrimSpace(finding.HowToFix),
+			"",
+		)
+	}
+
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func findAnchorLine(documentText, sourceChunk string) *int {
 	documentText = strings.TrimSpace(documentText)
 	sourceChunk = strings.TrimSpace(sourceChunk)
@@ -175,10 +198,7 @@ func quoteForComment(sourceChunk string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed != "" {
-			if len(trimmed) > 220 {
-				return trimmed[:220]
-			}
-			return trimmed
+			return safeTruncate(trimmed, 220)
 		}
 	}
 	return ""
@@ -191,10 +211,7 @@ func quoteLastMeaningfulLine(documentText string) string {
 		if trimmed == "" {
 			continue
 		}
-		if len(trimmed) > 220 {
-			return trimmed[:220]
-		}
-		return trimmed
+		return safeTruncate(trimmed, 220)
 	}
 	return ""
 }
@@ -215,6 +232,18 @@ func severityRank(severity domain.Severity) int {
 type themeGroup struct {
 	Title    string
 	Findings []domain.Finding
+}
+
+func groupFindingsByRole(findings []domain.Finding) map[string][]domain.Finding {
+	grouped := make(map[string][]domain.Finding)
+	for _, finding := range findings {
+		role := strings.TrimSpace(finding.Role)
+		if role == "" {
+			role = string(domain.ReviewerRoleSolutionArchitect)
+		}
+		grouped[role] = append(grouped[role], finding)
+	}
+	return grouped
 }
 
 func min(left, right int) int {
@@ -306,7 +335,7 @@ func compactSummary(findings []domain.Finding) string {
 
 	roleParts := summarizeRoles(findings)
 	if len(roleParts) > 0 {
-		return strings.Join(parts, ": ") + ". Роли с замечаниями: " + strings.Join(roleParts, ", ") + "."
+		return strings.Join(parts, ": ") + ". Активные роли: " + strings.Join(roleParts, ", ") + "."
 	}
 
 	return strings.Join(parts, ": ")
@@ -369,10 +398,7 @@ func shortProblem(problem string) string {
 	if problem == "" {
 		return "нужна дополнительная детализация"
 	}
-	if len(problem) > 140 {
-		return strings.TrimSpace(problem[:140]) + "..."
-	}
-	return problem
+	return safeTruncate(problem, 140)
 }
 
 func themeTitle(finding domain.Finding) string {
@@ -475,6 +501,21 @@ func roleEmoji(role string) string {
 	default:
 		return "📌"
 	}
+}
+
+func safeTruncate(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+
+	cut := runes[:limit]
+	text := strings.TrimSpace(string(cut))
+	if lastSpace := strings.LastIndex(text, " "); lastSpace > 0 {
+		text = strings.TrimSpace(text[:lastSpace])
+	}
+
+	return text + "..."
 }
 
 func MarshalAnchor(line int) string {
