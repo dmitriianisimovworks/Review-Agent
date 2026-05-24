@@ -157,12 +157,13 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:           []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
-				InlineComments:  true,
-				SummaryComments: true,
-				MemoryEnabled:   false,
-				ChunkSize:       40,
-				MaxChunks:       10,
+				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
+				CrossSectionContradictions: false,
+				InlineComments:             true,
+				SummaryComments:            true,
+				MemoryEnabled:              false,
+				ChunkSize:                  40,
+				MaxChunks:                  10,
 			},
 		},
 	)
@@ -226,8 +227,9 @@ func TestCommentServiceUsesReviewConfigDefaultPublishMode(t *testing.T) {
 		publisher,
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				InlineComments:  false,
-				SummaryComments: true,
+				CrossSectionContradictions: false,
+				InlineComments:             false,
+				SummaryComments:            true,
 			},
 		},
 	)
@@ -285,13 +287,14 @@ func TestAnalysisServiceBlocksMergeWhenCriticalPolicyEnabled(t *testing.T) {
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:              []domain.ReviewerRole{domain.ReviewerRoleTechLead},
-				InlineComments:     true,
-				SummaryComments:    true,
-				MemoryEnabled:      true,
-				CriticalBlockMerge: true,
-				ChunkSize:          5000,
-				MaxChunks:          10,
+				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleTechLead},
+				CrossSectionContradictions: false,
+				InlineComments:             true,
+				SummaryComments:            true,
+				MemoryEnabled:              true,
+				CriticalBlockMerge:         true,
+				ChunkSize:                  5000,
+				MaxChunks:                  10,
 			},
 		},
 	)
@@ -342,13 +345,14 @@ func TestAnalysisServicePersistsStructuredMemorySnapshot(t *testing.T) {
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:              []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
-				InlineComments:     true,
-				SummaryComments:    true,
-				MemoryEnabled:      true,
-				CriticalBlockMerge: true,
-				ChunkSize:          5000,
-				MaxChunks:          10,
+				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
+				CrossSectionContradictions: false,
+				InlineComments:             true,
+				SummaryComments:            true,
+				MemoryEnabled:              true,
+				CriticalBlockMerge:         true,
+				ChunkSize:                  5000,
+				MaxChunks:                  10,
 			},
 		},
 	)
@@ -417,13 +421,14 @@ func TestAnalysisServiceAddsCrossSectionContradictionFindings(t *testing.T) {
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:              []domain.ReviewerRole{domain.ReviewerRoleSolutionArchitect},
-				InlineComments:     true,
-				SummaryComments:    true,
-				MemoryEnabled:      true,
-				CriticalBlockMerge: true,
-				ChunkSize:          5000,
-				MaxChunks:          10,
+				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSolutionArchitect},
+				CrossSectionContradictions: true,
+				InlineComments:             true,
+				SummaryComments:            true,
+				MemoryEnabled:              true,
+				CriticalBlockMerge:         true,
+				ChunkSize:                  5000,
+				MaxChunks:                  10,
 			},
 		},
 	)
@@ -452,5 +457,95 @@ func TestAnalysisServiceAddsCrossSectionContradictionFindings(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected contradiction finding in analysis result")
+	}
+}
+
+func TestAnalysisServiceSkipsCrossSectionContradictionPassWhenDisabled(t *testing.T) {
+	documentRepo := &stubDocumentRepo{}
+	analysisRepo := &stubAnalysisRepo{}
+	llmClient := &recordingLLMClient{}
+	reader := &stubDocumentReader{
+		document: google.Document{
+			Title:      "spec",
+			ExternalID: "doc-1",
+			Content:    "ignored",
+			Sections: []google.Section{
+				{ID: "scope", Title: "Scope", Level: 1, Content: "Пользователь может удалять объект."},
+				{ID: "permissions", Title: "Permissions", Level: 1, Content: "Удалять объект может только администратор."},
+			},
+		},
+	}
+
+	service := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		llmClient,
+		reader,
+		nil,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{
+			settings: reviewconfig.Settings{
+				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSolutionArchitect},
+				CrossSectionContradictions: false,
+				InlineComments:             true,
+				SummaryComments:            true,
+				MemoryEnabled:              true,
+				CriticalBlockMerge:         true,
+				ChunkSize:                  5000,
+				MaxChunks:                  10,
+			},
+		},
+	)
+
+	if _, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
+		Source:       domain.DocumentSourceGoogleDocs,
+		GoogleDocURL: "https://docs.google.com/document/d/doc-1/edit",
+		Mode:         domain.AnalysisModeFullReview,
+	}); err != nil {
+		t.Fatalf("StartAnalysis() error = %v", err)
+	}
+
+	if len(llmClient.sectionPairInputs) != 0 {
+		t.Fatalf("expected cross-section contradiction pass to stay disabled")
+	}
+}
+
+func TestCompactGlobalFindingsKeepsOnlyStrongestCrossRoleDuplicate(t *testing.T) {
+	findings := []domain.Finding{
+		{
+			Role:       string(domain.ReviewerRoleTechLead),
+			Category:   "missing_requirement",
+			Severity:   domain.SeverityCritical,
+			Problem:    "Не указано поведение при одновременном захвате кейса двумя пользователями.",
+			WhyItIsBad: "Возникает race condition.",
+			HowToFix:   "Добавить атомарность захвата.",
+		},
+		{
+			Role:       string(domain.ReviewerRoleSeniorBackendEngineer),
+			Category:   "missing_requirement",
+			Severity:   domain.SeverityError,
+			Problem:    "Отсутствует описание поведения при конкурентном захвате кейса двумя пользователями.",
+			WhyItIsBad: "Возможна двойная выдача кейса.",
+			HowToFix:   "Описать optimistic locking.",
+		},
+		{
+			Role:       string(domain.ReviewerRoleQAReviewer),
+			Category:   "api_problem",
+			Severity:   domain.SeverityError,
+			Problem:    "Не описаны негативные сценарии обработки ошибок.",
+			WhyItIsBad: "Нельзя полноценно тестировать отказоустойчивость.",
+			HowToFix:   "Добавить error flows.",
+		},
+	}
+
+	compacted := compactGlobalFindings(findings)
+	if len(compacted) != 2 {
+		t.Fatalf("expected 2 findings after global compaction, got %d", len(compacted))
+	}
+	if compacted[0].Role != string(domain.ReviewerRoleTechLead) {
+		t.Fatalf("expected strongest duplicate to survive, got role %s", compacted[0].Role)
 	}
 }

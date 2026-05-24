@@ -260,63 +260,63 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		fmt.Sprintf("Предыдущих прогонов: %d", memory.PriorRunCount),
 	}
 
-	if summaries := limitStrings(memory.PriorSummaries, 2); len(summaries) > 0 {
+	if summaries := limitStrings(memory.PriorSummaries, 1); len(summaries) > 0 {
 		parts = append(parts, "Краткие summary прошлых ревью:")
 		for idx, summary := range summaries {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, summary))
 		}
 	}
 
-	if findings := roleRelevantFindings(memory.KnownFindings, role, 4); len(findings) > 0 {
+	if findings := roleRelevantFindings(memory.KnownFindings, role, 2); len(findings) > 0 {
 		parts = append(parts, "Уже обсуждённые замечания и риски:")
 		for idx, finding := range findings {
 			parts = append(parts, fmt.Sprintf("%d. [%s][%s][%s] %s", idx+1, roleDisplayName(domain.ReviewerRole(finding.Role)), finding.Severity, finding.Category, finding.Problem))
 		}
 	}
 
-	if notes := limitStrings(memory.ArchitecturalNotes, 2); len(notes) > 0 {
+	if notes := limitStrings(memory.ArchitecturalNotes, 1); len(notes) > 0 {
 		parts = append(parts, "Архитектурные заметки из прошлых ревью:")
 		for idx, note := range notes {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, note))
 		}
 	}
 
-	if modules := limitStrings(memory.Modules, 4); len(modules) > 0 {
+	if modules := limitStrings(memory.Modules, 2); len(modules) > 0 {
 		parts = append(parts, "Известные модули и разделы документа:")
 		for idx, module := range modules {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, module))
 		}
 	}
 
-	if roles := limitStrings(memory.UserRoles, 4); len(roles) > 0 {
+	if roles := limitStrings(memory.UserRoles, 2); len(roles) > 0 {
 		parts = append(parts, "Известные пользовательские роли:")
 		for idx, roleValue := range roles {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, roleValue))
 		}
 	}
 
-	if entities := limitStrings(memory.Entities, 4); len(entities) > 0 {
+	if entities := limitStrings(memory.Entities, 2); len(entities) > 0 {
 		parts = append(parts, "Известные сущности и термины:")
 		for idx, entity := range entities {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, entity))
 		}
 	}
 
-	if glossary := limitStrings(memory.Glossary, 4); len(glossary) > 0 {
+	if glossary := limitStrings(memory.Glossary, 2); len(glossary) > 0 {
 		parts = append(parts, "Глоссарий и важные понятия из прошлых ревью:")
 		for idx, term := range glossary {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, term))
 		}
 	}
 
-	if decisions := limitStrings(memory.ArchitectureDecisions, 3); len(decisions) > 0 {
+	if decisions := limitStrings(memory.ArchitectureDecisions, 1); len(decisions) > 0 {
 		parts = append(parts, "Архитектурные решения и договорённости:")
 		for idx, decision := range decisions {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, decision))
 		}
 	}
 
-	if sections := limitSections(memory.Sections, 3); len(sections) > 0 {
+	if sections := limitSections(memory.Sections, 2); len(sections) > 0 {
 		parts = append(parts, "Контекст по разделам документа:")
 		for idx, section := range sections {
 			line := fmt.Sprintf("%d. %s", idx+1, section.SectionTitle)
@@ -330,7 +330,7 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		}
 	}
 
-	if resolved := limitResolvedFindings(memory.ResolvedFindings, 3); len(resolved) > 0 {
+	if resolved := limitResolvedFindings(memory.ResolvedFindings, 1); len(resolved) > 0 {
 		parts = append(parts, "Ранее закрытые или исчезнувшие проблемы:")
 		for idx, finding := range resolved {
 			line := fmt.Sprintf("%d. %s", idx+1, finding.Problem)

@@ -34,6 +34,7 @@ type AnalysisService struct {
 
 const maxFindingsPerRole = 5
 const maxContradictionPairs = 8
+const maxGlobalFindings = 18
 
 type StartAnalysisInput struct {
 	Name         string
@@ -163,12 +164,14 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		return domain.Analysis{}, err
 	}
 	aggregatedFindings = findings
-	contradictionFindings, err := s.analyzeCrossSectionContradictions(ctx, document, parsed, mode, promptMemory)
-	if err != nil {
-		return domain.Analysis{}, err
+	if settings.CrossSectionContradictions {
+		contradictionFindings, err := s.analyzeCrossSectionContradictions(ctx, document, parsed, mode, promptMemory)
+		if err != nil {
+			return domain.Analysis{}, err
+		}
+		aggregatedFindings = append(aggregatedFindings, contradictionFindings...)
 	}
-	aggregatedFindings = append(aggregatedFindings, contradictionFindings...)
-	aggregatedFindings = deduplicateFindings(aggregatedFindings)
+	aggregatedFindings = compactGlobalFindings(aggregatedFindings)
 	analysisMemory := promptMemory
 	if settings.MemoryEnabled {
 		analysisMemory = enrichReviewMemory(promptMemory, document, chunks, aggregatedFindings, mode)
@@ -504,14 +507,21 @@ func buildSummary(findings []domain.Finding, chunkCount int) string {
 		topCategories = topCategories[:3]
 	}
 
+	topProblems := topDistinctProblems(findings, 3)
+	problemDigest := ""
+	if len(topProblems) > 0 {
+		problemDigest = fmt.Sprintf(" Ключевые темы: %s.", strings.Join(topProblems, "; "))
+	}
+
 	return fmt.Sprintf(
-		"Анализ завершён. Обработано фрагментов: %d. После фильтрации оставлено %d замечаний: %d CRITICAL, %d ERROR, %d WARNING. Основные категории: %s.",
+		"Анализ завершён. Обработано фрагментов: %d. После финальной дедупликации оставлено %d замечаний: %d CRITICAL, %d ERROR, %d WARNING. Основные категории: %s.%s",
 		chunkCount,
 		len(findings),
 		severityCounts[domain.SeverityCritical],
 		severityCounts[domain.SeverityError],
 		severityCounts[domain.SeverityWarning],
 		strings.Join(topCategories, ", "),
+		problemDigest,
 	)
 }
 
@@ -554,12 +564,13 @@ func filterRoleFindings(findings []domain.Finding) []domain.Finding {
 func (s *AnalysisService) loadReviewConfig() (reviewconfig.Settings, error) {
 	if s.reviewConfig == nil {
 		return reviewconfig.Settings{
-			Roles:           domain.DefaultReviewerRoles(),
-			InlineComments:  true,
-			SummaryComments: true,
-			MemoryEnabled:   true,
-			ChunkSize:       s.documentConfig.ChunkSize,
-			MaxChunks:       s.documentConfig.MaxChunks,
+			Roles:                      domain.DefaultReviewerRoles(),
+			CrossSectionContradictions: false,
+			InlineComments:             true,
+			SummaryComments:            true,
+			MemoryEnabled:              true,
+			ChunkSize:                  s.documentConfig.ChunkSize,
+			MaxChunks:                  s.documentConfig.MaxChunks,
 		}, nil
 	}
 
@@ -627,6 +638,133 @@ func deduplicateFindings(findings []domain.Finding) []domain.Finding {
 		result = append(result, finding)
 	}
 	return result
+}
+
+func compactGlobalFindings(findings []domain.Finding) []domain.Finding {
+	if len(findings) == 0 {
+		return nil
+	}
+
+	unique := deduplicateFindings(findings)
+	grouped := make(map[string][]domain.Finding, len(unique))
+	order := make([]string, 0, len(unique))
+	for _, finding := range unique {
+		key := globalFindingKey(finding)
+		if _, exists := grouped[key]; !exists {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], finding)
+	}
+
+	compacted := make([]domain.Finding, 0, len(grouped))
+	for _, key := range order {
+		candidates := grouped[key]
+		sort.SliceStable(candidates, func(i, j int) bool {
+			left := findingScore(candidates[i])
+			right := findingScore(candidates[j])
+			if left == right {
+				if strings.TrimSpace(candidates[i].Role) == strings.TrimSpace(candidates[j].Role) {
+					return candidates[i].Problem < candidates[j].Problem
+				}
+				return candidates[i].Role < candidates[j].Role
+			}
+			return left > right
+		})
+		compacted = append(compacted, candidates[0])
+	}
+
+	sort.SliceStable(compacted, func(i, j int) bool {
+		left := findingScore(compacted[i])
+		right := findingScore(compacted[j])
+		if left == right {
+			if compacted[i].Category == compacted[j].Category {
+				return compacted[i].Problem < compacted[j].Problem
+			}
+			return compacted[i].Category < compacted[j].Category
+		}
+		return left > right
+	})
+	if len(compacted) > maxGlobalFindings {
+		compacted = compacted[:maxGlobalFindings]
+	}
+
+	return compacted
+}
+
+func globalFindingKey(finding domain.Finding) string {
+	normalizedProblem := normalizeProblemForDedup(finding.Problem)
+	if normalizedProblem == "" {
+		normalizedProblem = normalizeKeyPart(finding.WhyItIsBad)
+	}
+
+	return strings.ToLower(strings.TrimSpace(finding.Category)) + "|" + normalizedProblem
+}
+
+func normalizeProblemForDedup(value string) string {
+	value = normalizeKeyPart(value)
+	if value == "" {
+		return ""
+	}
+
+	canonicalTopics := []struct {
+		keywords []string
+		value    string
+	}{
+		{
+			keywords: []string{"кейс", "пользоват", "захват"},
+			value:    "конкурентный_захват_кейса",
+		},
+		{
+			keywords: []string{"кейс", "пользоват", "взят"},
+			value:    "конкурентное_взятие_кейса",
+		},
+		{
+			keywords: []string{"race", "condition"},
+			value:    "race_condition",
+		},
+	}
+	for _, topic := range canonicalTopics {
+		if containsAllKeywords(value, topic.keywords) {
+			return topic.value
+		}
+	}
+
+	parts := strings.Split(value, "_")
+	if len(parts) > 12 {
+		parts = parts[:12]
+	}
+	return strings.Join(parts, "_")
+}
+
+func containsAllKeywords(value string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if !strings.Contains(value, keyword) {
+			return false
+		}
+	}
+	return true
+}
+
+func topDistinctProblems(findings []domain.Finding, limit int) []string {
+	if limit <= 0 || len(findings) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, limit)
+	top := make([]string, 0, limit)
+	for _, finding := range findings {
+		key := globalFindingKey(finding)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		top = append(top, finding.Problem)
+		if len(top) >= limit {
+			break
+		}
+	}
+
+	return top
 }
 
 func memoryFindingKey(finding domain.Finding) string {

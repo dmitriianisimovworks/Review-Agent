@@ -25,13 +25,14 @@ type Defaults struct {
 }
 
 type Settings struct {
-	Roles              []domain.ReviewerRole
-	CriticalBlockMerge bool
-	InlineComments     bool
-	SummaryComments    bool
-	MemoryEnabled      bool
-	ChunkSize          int
-	MaxChunks          int
+	Roles                      []domain.ReviewerRole
+	CriticalBlockMerge         bool
+	CrossSectionContradictions bool
+	InlineComments             bool
+	SummaryComments            bool
+	MemoryEnabled              bool
+	ChunkSize                  int
+	MaxChunks                  int
 }
 
 type Loader struct {
@@ -41,11 +42,12 @@ type Loader struct {
 
 type rawConfig struct {
 	Review struct {
-		Architecture *bool `yaml:"architecture"`
-		Backend      *bool `yaml:"backend"`
-		Frontend     *bool `yaml:"frontend"`
-		DevOps       *bool `yaml:"devops"`
-		QA           *bool `yaml:"qa"`
+		Architecture               *bool `yaml:"architecture"`
+		Backend                    *bool `yaml:"backend"`
+		Frontend                   *bool `yaml:"frontend"`
+		DevOps                     *bool `yaml:"devops"`
+		QA                         *bool `yaml:"qa"`
+		CrossSectionContradictions *bool `yaml:"cross_section_contradictions"`
 	} `yaml:"review"`
 	Severity struct {
 		CriticalBlockMerge *bool `yaml:"critical_block_merge"`
@@ -101,6 +103,9 @@ func (l *Loader) Load() (Settings, error) {
 	if raw.Severity.CriticalBlockMerge != nil {
 		settings.CriticalBlockMerge = *raw.Severity.CriticalBlockMerge
 	}
+	if raw.Review.CrossSectionContradictions != nil {
+		settings.CrossSectionContradictions = *raw.Review.CrossSectionContradictions
+	}
 	if raw.Context.MemoryEnabled != nil {
 		settings.MemoryEnabled = *raw.Context.MemoryEnabled
 	}
@@ -144,13 +149,14 @@ func defaultSettings(defaults Defaults) Settings {
 	}
 
 	return Settings{
-		Roles:              domain.DefaultReviewerRoles(),
-		CriticalBlockMerge: true,
-		InlineComments:     true,
-		SummaryComments:    true,
-		MemoryEnabled:      true,
-		ChunkSize:          chunkSize,
-		MaxChunks:          maxChunks,
+		Roles:                      domain.DefaultReviewerRoles(),
+		CriticalBlockMerge:         true,
+		CrossSectionContradictions: false,
+		InlineComments:             true,
+		SummaryComments:            true,
+		MemoryEnabled:              true,
+		ChunkSize:                  chunkSize,
+		MaxChunks:                  maxChunks,
 	}
 }
 
