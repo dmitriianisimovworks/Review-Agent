@@ -44,6 +44,9 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	if !strings.Contains(summary.Content, "Итоговый комментарий") {
 		t.Fatalf("summary draft missing title: %q", summary.Content)
 	}
+	if !strings.Contains(summary.Content, "Найдено 1 замечаний") {
+		t.Fatalf("summary draft should contain compact totals: %q", summary.Content)
+	}
 	if summary.AnchorLine == nil || *summary.AnchorLine < *inline.AnchorLine {
 		t.Fatalf("expected summary anchor to be at end of document")
 	}
@@ -71,5 +74,41 @@ func TestSelectInlineFindingsFiltersSeverityAndLimitsWarnings(t *testing.T) {
 		if finding.Severity == domain.SeverityInfo {
 			t.Fatalf("info finding should not be selected for inline comments")
 		}
+	}
+}
+
+func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{Severity: domain.SeverityError, Category: "missing_requirement", Problem: "Не определены финальные статусы кейса."},
+			{Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не описано ограничение на повторные эскалации."},
+			{Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не описаны правила редактирования комментариев."},
+			{Severity: domain.SeverityWarning, Category: "missing_requirement", Problem: "Не указан формат экспорта отчётов."},
+		},
+	}
+
+	inline := []domain.Finding{
+		analysis.Findings[0],
+	}
+
+	drafts := buildSummaryDrafts(document, analysis, inline)
+	if len(drafts) != 1 {
+		t.Fatalf("expected 1 summary draft, got %d", len(drafts))
+	}
+
+	content := drafts[0].Content
+	if strings.Contains(content, "1. [") {
+		t.Fatalf("summary should not contain long enumerated list anymore: %q", content)
+	}
+	if !strings.Contains(content, "Дополнительно:") {
+		t.Fatalf("summary should contain grouped section: %q", content)
+	}
+	if !strings.Contains(content, "- ") {
+		t.Fatalf("summary should contain grouped bullet points: %q", content)
 	}
 }
