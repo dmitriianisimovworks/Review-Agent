@@ -18,3 +18,14 @@ type Document struct {
 	NormalizedContent string
 	CreatedAt         time.Time
 }
+
+type GoogleOAuthConnection struct {
+	ID           string
+	GoogleUserID string
+	Email        string
+	AccessToken  string
+	RefreshToken string
+	Expiry       *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}

@@ -16,6 +16,11 @@ type DocumentRepository interface {
 	GetByID(ctx context.Context, id string) (domain.Document, error)
 }
 
+type GoogleOAuthConnectionRepository interface {
+	Save(ctx context.Context, connection domain.GoogleOAuthConnection) error
+	GetByGoogleUserID(ctx context.Context, googleUserID string) (domain.GoogleOAuthConnection, error)
+}
+
 type AnalysisCache interface {
 	Set(ctx context.Context, analysis domain.Analysis) error
 	Get(ctx context.Context, id string) (domain.Analysis, bool, error)

@@ -74,10 +74,12 @@ func New() (*App, error) {
 	documentParser := parser.NewChunkingParser(cfg.Document)
 	documentRepo := postgresrepo.NewDocumentRepository(pgPool)
 	analysisRepo := postgresrepo.NewAnalysisRepository(pgPool)
+	googleOAuthRepo := postgresrepo.NewGoogleOAuthConnectionRepository(pgPool)
 	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
 	promptBuilder := prompt.NewDefaultBuilder()
 	commentFormatter := comment.NewDefaultFormatter()
 	llmClient := llm.NewOpenAICompatibleClient(cfg.LLM, promptBuilder)
+	googleOAuthProvider := google.NewOAuthService(cfg.Google)
 	documentReader, err := google.NewServiceAccountReader(ctx, cfg.Google.ServiceAccountFile)
 	if err != nil {
 		redisClient.Close()
@@ -108,12 +110,17 @@ func New() (*App, error) {
 		commentFormatter,
 		docsPublisher,
 	)
+	googleOAuthService := service.NewGoogleOAuthService(
+		googleOAuthRepo,
+		googleOAuthProvider,
+	)
 
 	handler := api.NewRouter(api.Dependencies{
 		AnalysisService: &analysisFacade{
 			analysisService: analysisService,
 			commentService:  commentService,
 		},
+		GoogleOAuthService: googleOAuthService,
 	})
 
 	server := &http.Server{

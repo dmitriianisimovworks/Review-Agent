@@ -10,7 +10,8 @@ import (
 )
 
 type Dependencies struct {
-	AnalysisService handlers.AnalysisService
+	AnalysisService    handlers.AnalysisService
+	GoogleOAuthService handlers.GoogleOAuthService
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -23,10 +24,13 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	healthHandler := handlers.NewHealthHandler()
 	analysisHandler := handlers.NewAnalysisHandler(deps.AnalysisService)
+	googleOAuthHandler := handlers.NewGoogleOAuthHandler(deps.GoogleOAuthService)
 
 	router.Get("/health", healthHandler.Handle)
+	router.Get("/oauth/google/callback", googleOAuthHandler.Callback)
 
 	router.Route("/api/v1", func(r chi.Router) {
+		r.Get("/google/oauth/start", googleOAuthHandler.Start)
 		r.Post("/analyses", analysisHandler.Start)
 		r.Get("/analyses/{analysisID}", analysisHandler.Get)
 		r.Post("/analyses/{analysisID}/publish-comments", analysisHandler.PublishComments)
