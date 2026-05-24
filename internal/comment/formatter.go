@@ -134,6 +134,8 @@ func buildSummaryDrafts(document domain.Document, analysis domain.Analysis, publ
 
 func formatFinding(finding domain.Finding) string {
 	return strings.Join([]string{
+		fmt.Sprintf("%s %s", roleEmoji(finding.Role), roleLabel(finding.Role)),
+		"",
 		fmt.Sprintf("[%s]", finding.Severity),
 		"",
 		"Проблема:",
@@ -302,6 +304,11 @@ func compactSummary(findings []domain.Finding) string {
 		parts = append(parts, fmt.Sprintf("%d WARNING", warnings))
 	}
 
+	roleParts := summarizeRoles(findings)
+	if len(roleParts) > 0 {
+		return strings.Join(parts, ": ") + ". Роли с замечаниями: " + strings.Join(roleParts, ", ") + "."
+	}
+
 	return strings.Join(parts, ": ")
 }
 
@@ -413,6 +420,61 @@ func findingKey(finding domain.Finding) string {
 		finding.Category,
 		strings.TrimSpace(finding.Problem),
 	}, "|")
+}
+
+func summarizeRoles(findings []domain.Finding) []string {
+	counts := map[string]int{}
+	order := make([]string, 0)
+	for _, finding := range findings {
+		if _, exists := counts[finding.Role]; !exists {
+			order = append(order, finding.Role)
+		}
+		counts[finding.Role]++
+	}
+
+	result := make([]string, 0, len(order))
+	for _, role := range order {
+		result = append(result, fmt.Sprintf("%s %s (%d)", roleEmoji(role), roleLabel(role), counts[role]))
+	}
+	return result
+}
+
+func roleLabel(role string) string {
+	switch role {
+	case string(domain.ReviewerRoleTechLead):
+		return "Tech Lead"
+	case string(domain.ReviewerRoleSolutionArchitect):
+		return "Solution Architect"
+	case string(domain.ReviewerRoleSeniorBackendEngineer):
+		return "Senior Backend Engineer"
+	case string(domain.ReviewerRoleSeniorFrontendEngineer):
+		return "Senior Frontend Engineer"
+	case string(domain.ReviewerRoleDevOpsReviewer):
+		return "DevOps Reviewer"
+	case string(domain.ReviewerRoleQAReviewer):
+		return "QA Reviewer"
+	default:
+		return "Reviewer"
+	}
+}
+
+func roleEmoji(role string) string {
+	switch role {
+	case string(domain.ReviewerRoleTechLead):
+		return "🧭"
+	case string(domain.ReviewerRoleSolutionArchitect):
+		return "🏗"
+	case string(domain.ReviewerRoleSeniorBackendEngineer):
+		return "🧱"
+	case string(domain.ReviewerRoleSeniorFrontendEngineer):
+		return "🖥"
+	case string(domain.ReviewerRoleDevOpsReviewer):
+		return "⚙️"
+	case string(domain.ReviewerRoleQAReviewer):
+		return "🧪"
+	default:
+		return "📌"
+	}
 }
 
 func MarshalAnchor(line int) string {

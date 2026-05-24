@@ -29,6 +29,8 @@ type AnalysisService struct {
 	llmModel         string
 }
 
+const maxFindingsPerRole = 5
+
 type StartAnalysisInput struct {
 	Name         string
 	Content      string
@@ -237,7 +239,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 		findings = append(findings, outcome.findings...)
 	}
 
-	return chunks, findings, nil
+	return chunks, filterRoleFindings(findings), nil
 }
 
 func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.Analysis, error) {
@@ -290,7 +292,7 @@ func buildSummary(findings []domain.Finding, chunkCount int) string {
 	}
 
 	return fmt.Sprintf(
-		"Анализ завершён. Обработано фрагментов: %d. Найдено замечаний: %d, из них критичных: %d, ошибок: %d, предупреждений: %d. Основные категории: %s.",
+		"Анализ завершён. Обработано фрагментов: %d. После фильтрации оставлено %d замечаний: %d CRITICAL, %d ERROR, %d WARNING. Основные категории: %s.",
 		chunkCount,
 		len(findings),
 		severityCounts[domain.SeverityCritical],
@@ -298,4 +300,85 @@ func buildSummary(findings []domain.Finding, chunkCount int) string {
 		severityCounts[domain.SeverityWarning],
 		strings.Join(topCategories, ", "),
 	)
+}
+
+func filterRoleFindings(findings []domain.Finding) []domain.Finding {
+	grouped := make(map[string][]domain.Finding)
+	roleOrder := make([]string, 0)
+	for _, finding := range findings {
+		if finding.Role == "" {
+			finding.Role = string(domain.ReviewerRoleSolutionArchitect)
+		}
+		if _, exists := grouped[finding.Role]; !exists {
+			roleOrder = append(roleOrder, finding.Role)
+		}
+		grouped[finding.Role] = append(grouped[finding.Role], finding)
+	}
+
+	filtered := make([]domain.Finding, 0, len(findings))
+	for _, role := range roleOrder {
+		roleFindings := deduplicateFindings(grouped[role])
+		sort.SliceStable(roleFindings, func(i, j int) bool {
+			left := findingScore(roleFindings[i])
+			right := findingScore(roleFindings[j])
+			if left == right {
+				if roleFindings[i].Category == roleFindings[j].Category {
+					return roleFindings[i].Problem < roleFindings[j].Problem
+				}
+				return roleFindings[i].Category < roleFindings[j].Category
+			}
+			return left > right
+		})
+		if len(roleFindings) > maxFindingsPerRole {
+			roleFindings = roleFindings[:maxFindingsPerRole]
+		}
+		filtered = append(filtered, roleFindings...)
+	}
+
+	return filtered
+}
+
+func deduplicateFindings(findings []domain.Finding) []domain.Finding {
+	result := make([]domain.Finding, 0, len(findings))
+	seen := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		key := strings.ToLower(strings.TrimSpace(finding.Role)) + "|" +
+			strings.ToLower(strings.TrimSpace(finding.Category)) + "|" +
+			strings.ToLower(strings.TrimSpace(finding.Problem))
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, finding)
+	}
+	return result
+}
+
+func findingScore(finding domain.Finding) int {
+	score := 0
+	switch finding.Severity {
+	case domain.SeverityCritical:
+		score += 400
+	case domain.SeverityError:
+		score += 300
+	case domain.SeverityWarning:
+		score += 200
+	default:
+		score += 100
+	}
+
+	switch finding.Category {
+	case "contradiction":
+		score += 40
+	case "security_risk":
+		score += 35
+	case "technical_risk", "scalability_risk", "devops_risk":
+		score += 30
+	case "missing_requirement":
+		score += 20
+	case "ambiguity":
+		score += 10
+	}
+
+	return score
 }
