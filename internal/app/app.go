@@ -10,7 +10,9 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	api "technical-specification-review-agent/internal/api/http"
+	"technical-specification-review-agent/internal/comment"
 	"technical-specification-review-agent/internal/config"
+	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
 	"technical-specification-review-agent/internal/parser"
@@ -26,6 +28,23 @@ type App struct {
 	server      *http.Server
 	pgPool      *pgxpool.Pool
 	redisClient *goredis.Client
+}
+
+type analysisFacade struct {
+	analysisService *service.AnalysisService
+	commentService  *service.CommentService
+}
+
+func (f *analysisFacade) StartAnalysis(ctx context.Context, input service.StartAnalysisInput) (domain.Analysis, error) {
+	return f.analysisService.StartAnalysis(ctx, input)
+}
+
+func (f *analysisFacade) GetAnalysis(ctx context.Context, id string) (domain.Analysis, error) {
+	return f.analysisService.GetAnalysis(ctx, id)
+}
+
+func (f *analysisFacade) PublishComments(ctx context.Context, input service.PublishCommentsInput) (service.PublishCommentsResult, error) {
+	return f.commentService.PublishComments(ctx, input)
 }
 
 func New() (*App, error) {
@@ -57,6 +76,7 @@ func New() (*App, error) {
 	analysisRepo := postgresrepo.NewAnalysisRepository(pgPool)
 	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
 	promptBuilder := prompt.NewDefaultBuilder()
+	commentFormatter := comment.NewDefaultFormatter()
 	llmClient := llm.NewOpenAICompatibleClient(cfg.LLM, promptBuilder)
 	documentReader, err := google.NewServiceAccountReader(ctx, cfg.Google.ServiceAccountFile)
 	if err != nil {
@@ -64,7 +84,12 @@ func New() (*App, error) {
 		pgPool.Close()
 		return nil, err
 	}
-	docsPublisher := google.NewNoopCommentPublisher()
+	docsPublisher, err := google.NewDriveCommentPublisher(ctx, cfg.Google.ServiceAccountFile)
+	if err != nil {
+		redisClient.Close()
+		pgPool.Close()
+		return nil, err
+	}
 
 	analysisService := service.NewAnalysisService(
 		documentRepo,
@@ -77,9 +102,18 @@ func New() (*App, error) {
 		cfg.LLM.Provider,
 		cfg.LLM.Model,
 	)
+	commentService := service.NewCommentService(
+		documentRepo,
+		analysisRepo,
+		commentFormatter,
+		docsPublisher,
+	)
 
 	handler := api.NewRouter(api.Dependencies{
-		AnalysisService: analysisService,
+		AnalysisService: &analysisFacade{
+			analysisService: analysisService,
+			commentService:  commentService,
+		},
 	})
 
 	server := &http.Server{

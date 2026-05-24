@@ -3,10 +3,13 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"technical-specification-review-agent/internal/comment"
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/service"
 )
@@ -14,6 +17,7 @@ import (
 type AnalysisService interface {
 	StartAnalysis(ctx context.Context, input service.StartAnalysisInput) (domain.Analysis, error)
 	GetAnalysis(ctx context.Context, id string) (domain.Analysis, error)
+	PublishComments(ctx context.Context, input service.PublishCommentsInput) (service.PublishCommentsResult, error)
 }
 
 type AnalysisHandler struct {
@@ -34,6 +38,18 @@ type AnalysisResponse struct {
 	Status     string           `json:"status"`
 	Summary    string           `json:"summary"`
 	Findings   []FindingPayload `json:"findings"`
+}
+
+type PublishCommentsRequest struct {
+	Mode string `json:"mode"`
+}
+
+type PublishCommentsResponse struct {
+	AnalysisID     string `json:"analysis_id"`
+	DocumentID     string `json:"document_id"`
+	DocumentSource string `json:"document_source"`
+	PublishedCount int    `json:"published_count"`
+	PublishMode    string `json:"publish_mode"`
 }
 
 type FindingPayload struct {
@@ -83,6 +99,33 @@ func (h *AnalysisHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAnalysisResponse(analysis))
 }
 
+func (h *AnalysisHandler) PublishComments(w http.ResponseWriter, r *http.Request) {
+	analysisID := chi.URLParam(r, "analysisID")
+
+	var req PublishCommentsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	result, err := h.analysisService.PublishComments(r.Context(), service.PublishCommentsInput{
+		AnalysisID: analysisID,
+		Mode:       serviceCommentMode(req.Mode),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, PublishCommentsResponse{
+		AnalysisID:     result.AnalysisID,
+		DocumentID:     result.DocumentID,
+		DocumentSource: result.DocumentSource,
+		PublishedCount: result.PublishedCount,
+		PublishMode:    result.PublishMode,
+	})
+}
+
 func toAnalysisResponse(analysis domain.Analysis) AnalysisResponse {
 	findings := make([]FindingPayload, 0, len(analysis.Findings))
 	for _, finding := range analysis.Findings {
@@ -102,5 +145,16 @@ func toAnalysisResponse(analysis domain.Analysis) AnalysisResponse {
 		Status:     string(analysis.Status),
 		Summary:    analysis.Summary,
 		Findings:   findings,
+	}
+}
+
+func serviceCommentMode(mode string) comment.PublishMode {
+	switch mode {
+	case string(comment.PublishModeInline):
+		return comment.PublishModeInline
+	case string(comment.PublishModeSummary):
+		return comment.PublishModeSummary
+	default:
+		return comment.PublishModeBoth
 	}
 }

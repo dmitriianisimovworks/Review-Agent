@@ -29,6 +29,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Post("/analyses", analysisHandler.Start)
 		r.Get("/analyses/{analysisID}", analysisHandler.Get)
+		r.Post("/analyses/{analysisID}/publish-comments", analysisHandler.PublishComments)
 	})
 
 	return router

@@ -12,8 +12,15 @@ type DocumentReader interface {
 	Read(ctx context.Context, documentURL string) (Document, error)
 }
 
+type CommentDraft struct {
+	Content       string
+	AnchorLine    *int
+	QuotedContent string
+	Type          string
+}
+
 type CommentPublisher interface {
-	Publish(ctx context.Context, documentExternalID string, comments []string) error
+	Publish(ctx context.Context, documentExternalID string, comments []CommentDraft) error
 }
 
 type NoopDocumentReader struct{}
@@ -32,6 +39,6 @@ func NewNoopCommentPublisher() *NoopCommentPublisher {
 	return &NoopCommentPublisher{}
 }
 
-func (p *NoopCommentPublisher) Publish(_ context.Context, _ string, _ []string) error {
+func (p *NoopCommentPublisher) Publish(_ context.Context, _ string, _ []CommentDraft) error {
 	return nil
 }
