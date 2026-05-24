@@ -16,6 +16,7 @@ type Input struct {
 	Mode         domain.AnalysisMode
 	Source       domain.DocumentSource
 	Role         domain.ReviewerRole
+	Memory       domain.ReviewMemory
 }
 
 type BuiltPrompt struct {
@@ -66,6 +67,11 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 Не выдумывай замечания ради количества.
 Не дублируй одно и то же замечание разными формулировками.
 Приоритизируй CRITICAL, затем ERROR, затем WARNING.
+Если передан контекст прошлых ревью, учитывай его как память документа:
+- помни уже найденные замечания, риски и архитектурные договорённости;
+- не повторяй слово в слово уже известные проблемы, если в них нет новой грани, новой причины или роста severity;
+- в режиме incremental_review фокусируйся на новых проблемах, новых противоречиях и изменениях относительно предыдущих замечаний;
+- если старая проблема остаётся актуальной, упоминай её только когда появился новый слой риска или новое последствие.
 
 Верни только валидный JSON со строго такой структурой:
 {
@@ -93,13 +99,14 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 `, roleDisplayName(role), roleInstructions(role), role))
 
 	user := fmt.Sprintf(
-		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON.\n\n%s",
+		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON.\n\n%s",
 		mode,
 		defaultString(string(input.Source), string(domain.DocumentSourceUpload)),
 		defaultString(input.DocumentName, "unnamed_document"),
 		roleDisplayName(role),
 		input.ChunkIndex+1,
 		maxInt(input.ChunkCount, 1),
+		formatMemorySection(input.Memory),
 		input.ChunkText,
 	)
 
@@ -181,6 +188,41 @@ func roleInstructions(role domain.ReviewerRole) string {
 	default:
 		return ""
 	}
+}
+
+func formatMemorySection(memory domain.ReviewMemory) string {
+	if !memory.HasContext() {
+		return ""
+	}
+
+	parts := []string{
+		fmt.Sprintf("Ключ памяти документа: %s", memory.ReviewKey),
+		fmt.Sprintf("Предыдущих прогонов: %d", memory.PriorRunCount),
+	}
+
+	if len(memory.PriorSummaries) > 0 {
+		parts = append(parts, "Краткие summary прошлых ревью:")
+		for idx, summary := range memory.PriorSummaries {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, summary))
+		}
+	}
+
+	if len(memory.KnownFindings) > 0 {
+		parts = append(parts, "Уже обсуждённые замечания и риски:")
+		for idx, finding := range memory.KnownFindings {
+			parts = append(parts, fmt.Sprintf("%d. [%s][%s][%s] %s", idx+1, roleDisplayName(domain.ReviewerRole(finding.Role)), finding.Severity, finding.Category, finding.Problem))
+		}
+	}
+
+	if len(memory.ArchitecturalNotes) > 0 {
+		parts = append(parts, "Архитектурные заметки из прошлых ревью:")
+		for idx, note := range memory.ArchitecturalNotes {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, note))
+		}
+	}
+
+	parts = append(parts, "Учитывай этот контекст как память документа и не повторяй дословно уже известные замечания без новой ценности.")
+	return strings.Join(parts, "\n") + "\n"
 }
 
 var _ Builder = (*DefaultBuilder)(nil)

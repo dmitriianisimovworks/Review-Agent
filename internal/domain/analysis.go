@@ -30,6 +30,7 @@ type Analysis struct {
 	Findings     []Finding
 	Chunks       []AnalysisChunk
 	Summary      string
+	Memory       ReviewMemory
 	ErrorMessage string
 	CreatedAt    time.Time
 	CompletedAt  *time.Time

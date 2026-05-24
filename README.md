@@ -55,6 +55,25 @@ The compose stack uses an internal-only Docker network and does not publish port
 }
 ```
 
+For repeated reviews and incremental review, the backend now keeps a review memory thread:
+
+- Google Docs automatically use the same thread via the document external ID.
+- Uploads can provide an explicit `context_key` to reuse history between iterations.
+
+Example incremental review for uploads:
+
+```json
+{
+  "name": "billing-spec-v2.md",
+  "source": "upload",
+  "mode": "incremental_review",
+  "context_key": "billing-service-spec",
+  "content": "updated section text here"
+}
+```
+
+In `incremental_review`, the prompt receives prior findings, prior summaries, and architectural notes from previous runs in the same review thread. The backend also suppresses exact known duplicates from previous iterations.
+
 The backend reads the document through a Google service account configured via:
 
 - `GOOGLE_SERVICE_ACCOUNT_FILE`

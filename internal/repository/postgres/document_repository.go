@@ -21,16 +21,16 @@ func NewDocumentRepository(pool *pgxpool.Pool) *DocumentRepository {
 func (r *DocumentRepository) Save(ctx context.Context, document domain.Document) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO documents (
-			id, source, name, external_id, raw_content, normalized_content, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7)
-	`, document.ID, document.Source, document.Name, nullString(document.ExternalID), document.RawContent, document.NormalizedContent, document.CreatedAt)
+			id, source, name, external_id, review_key, raw_content, normalized_content, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, document.ID, document.Source, document.Name, nullString(document.ExternalID), document.ReviewKey, document.RawContent, document.NormalizedContent, document.CreatedAt)
 	return err
 }
 
 func (r *DocumentRepository) GetByID(ctx context.Context, id string) (domain.Document, error) {
 	var document domain.Document
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, name, source, COALESCE(external_id, ''), raw_content, normalized_content, created_at
+		SELECT id, name, source, COALESCE(external_id, ''), review_key, raw_content, normalized_content, created_at
 		FROM documents
 		WHERE id = $1
 	`, id).Scan(
@@ -38,6 +38,7 @@ func (r *DocumentRepository) GetByID(ctx context.Context, id string) (domain.Doc
 		&document.Name,
 		&document.Source,
 		&document.ExternalID,
+		&document.ReviewKey,
 		&document.RawContent,
 		&document.NormalizedContent,
 		&document.CreatedAt,

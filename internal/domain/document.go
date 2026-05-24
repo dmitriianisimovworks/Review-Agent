@@ -14,6 +14,7 @@ type Document struct {
 	Name              string
 	Source            DocumentSource
 	ExternalID        string
+	ReviewKey         string
 	RawContent        string
 	NormalizedContent string
 	CreatedAt         time.Time

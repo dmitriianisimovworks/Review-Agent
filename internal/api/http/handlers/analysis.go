@@ -28,6 +28,7 @@ type StartAnalysisRequest struct {
 	Name         string `json:"name"`
 	Content      string `json:"content"`
 	GoogleDocURL string `json:"google_doc_url"`
+	ContextKey   string `json:"context_key"`
 	Source       string `json:"source"`
 	Mode         string `json:"mode"`
 }
@@ -76,6 +77,7 @@ func (h *AnalysisHandler) Start(w http.ResponseWriter, r *http.Request) {
 		Name:         req.Name,
 		Content:      req.Content,
 		GoogleDocURL: req.GoogleDocURL,
+		ContextKey:   req.ContextKey,
 		Source:       domain.DocumentSource(req.Source),
 		Mode:         domain.AnalysisMode(req.Mode),
 	})

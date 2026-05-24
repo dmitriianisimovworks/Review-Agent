@@ -26,6 +26,7 @@ type AnalyzeInput struct {
 	Mode         domain.AnalysisMode
 	Source       domain.DocumentSource
 	Role         domain.ReviewerRole
+	Memory       domain.ReviewMemory
 }
 
 type ChunkAnalysisResult struct {
@@ -106,6 +107,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 		Mode:         input.Mode,
 		Source:       input.Source,
 		Role:         input.Role,
+		Memory:       input.Memory,
 	})
 
 	payload := chatCompletionRequest{
@@ -183,7 +185,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 
 	return ChunkAnalysisResult{
 		Findings:      findings,
-		PromptVersion: "v2-role-based",
+		PromptVersion: "v3-role-memory",
 		SystemPrompt:  builtPrompt.System,
 		UserPrompt:    builtPrompt.User,
 		RawResponse:   content,

@@ -9,6 +9,7 @@ import (
 type AnalysisRepository interface {
 	Save(ctx context.Context, analysis domain.Analysis) error
 	GetByID(ctx context.Context, id string) (domain.Analysis, error)
+	ListByReviewKey(ctx context.Context, reviewKey string, limit int) ([]domain.Analysis, error)
 }
 
 type DocumentRepository interface {

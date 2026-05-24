@@ -35,6 +35,7 @@ type StartAnalysisInput struct {
 	Name         string
 	Content      string
 	GoogleDocURL string
+	ContextKey   string
 	Source       domain.DocumentSource
 	Mode         domain.AnalysisMode
 }
@@ -77,6 +78,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	content := strings.TrimSpace(input.Content)
 	documentName := strings.TrimSpace(input.Name)
 	externalID := ""
+	reviewKey := strings.TrimSpace(input.ContextKey)
 
 	if source == domain.DocumentSourceGoogleDocs {
 		if s.documentReader == nil {
@@ -101,11 +103,19 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
 	}
 
+	reviewKey = deriveReviewKey(source, reviewKey, externalID, documentName)
+	previousAnalyses, err := s.analysisRepo.ListByReviewKey(ctx, reviewKey, reviewMemoryRunLimit)
+	if err != nil {
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to load review history", err)
+	}
+	memory := buildReviewMemory(reviewKey, previousAnalyses)
+
 	document := domain.Document{
 		ID:         fmt.Sprintf("doc_%d", now.UnixNano()),
 		Name:       documentName,
 		Source:     source,
 		ExternalID: externalID,
+		ReviewKey:  reviewKey,
 		RawContent: content,
 		CreatedAt:  now,
 	}
@@ -121,7 +131,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	aggregatedFindings := make([]domain.Finding, 0)
-	chunks, findings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, now)
+	chunks, findings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, now, memory)
 	if err != nil {
 		return domain.Analysis{}, err
 	}
@@ -139,6 +149,7 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		Findings:    aggregatedFindings,
 		Chunks:      chunks,
 		Summary:     buildSummary(aggregatedFindings, len(parsed.Chunks)),
+		Memory:      memory,
 		CreatedAt:   now,
 		CompletedAt: &completedAt,
 	}
@@ -162,6 +173,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 	parsed parser.ParsedDocument,
 	mode domain.AnalysisMode,
 	now time.Time,
+	memory domain.ReviewMemory,
 ) ([]domain.AnalysisChunk, []domain.Finding, error) {
 	roles := domain.DefaultReviewerRoles()
 	type llmOutcome struct {
@@ -191,6 +203,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 					Mode:         mode,
 					Source:       document.Source,
 					Role:         role,
+					Memory:       memory,
 				})
 				if err != nil {
 					return apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d for role %s", idx+1, role), err)
@@ -239,7 +252,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 		findings = append(findings, outcome.findings...)
 	}
 
-	return chunks, filterRoleFindings(findings), nil
+	return chunks, filterFindingsByMode(filterRoleFindings(findings), memory, mode), nil
 }
 
 func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.Analysis, error) {
@@ -338,6 +351,31 @@ func filterRoleFindings(findings []domain.Finding) []domain.Finding {
 	return filtered
 }
 
+func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory, mode domain.AnalysisMode) []domain.Finding {
+	if mode != domain.AnalysisModeIncrementalReview || !memory.HasContext() || len(memory.KnownFindings) == 0 {
+		return findings
+	}
+
+	known := make(map[string]domain.Finding, len(memory.KnownFindings))
+	for _, finding := range memory.KnownFindings {
+		known[memoryFindingKey(finding)] = finding
+	}
+
+	filtered := make([]domain.Finding, 0, len(findings))
+	for _, finding := range findings {
+		existing, exists := known[memoryFindingKey(finding)]
+		if !exists {
+			filtered = append(filtered, finding)
+			continue
+		}
+		if findingScore(finding) > findingScore(existing) {
+			filtered = append(filtered, finding)
+		}
+	}
+
+	return filtered
+}
+
 func deduplicateFindings(findings []domain.Finding) []domain.Finding {
 	result := make([]domain.Finding, 0, len(findings))
 	seen := make(map[string]struct{}, len(findings))
@@ -352,6 +390,12 @@ func deduplicateFindings(findings []domain.Finding) []domain.Finding {
 		result = append(result, finding)
 	}
 	return result
+}
+
+func memoryFindingKey(finding domain.Finding) string {
+	return strings.ToLower(strings.TrimSpace(finding.Role)) + "|" +
+		strings.ToLower(strings.TrimSpace(finding.Category)) + "|" +
+		strings.ToLower(strings.TrimSpace(finding.Problem))
 }
 
 func findingScore(finding domain.Finding) int {
@@ -381,4 +425,28 @@ func findingScore(finding domain.Finding) int {
 	}
 
 	return score
+}
+
+func deriveReviewKey(source domain.DocumentSource, contextKey, externalID, name string) string {
+	if trimmed := normalizeKeyPart(contextKey); trimmed != "" {
+		return trimmed
+	}
+	if trimmed := normalizeKeyPart(externalID); trimmed != "" {
+		return string(source) + ":" + trimmed
+	}
+	if trimmed := normalizeKeyPart(name); trimmed != "" {
+		return string(source) + ":" + trimmed
+	}
+	return string(source) + ":unnamed_document"
+}
+
+func normalizeKeyPart(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\t", " ")
+	value = strings.Join(strings.Fields(value), "_")
+	return value
 }
