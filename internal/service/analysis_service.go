@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"technical-specification-review-agent/internal/apperrors"
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
@@ -117,33 +119,11 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	aggregatedFindings := make([]domain.Finding, 0)
-	chunks := make([]domain.AnalysisChunk, 0, len(parsed.Chunks))
-	for idx, chunk := range parsed.Chunks {
-		result, err := s.llmClient.AnalyzeChunk(ctx, llm.AnalyzeInput{
-			DocumentName: document.Name,
-			DocumentText: parsed.Text,
-			ChunkText:    chunk,
-			ChunkIndex:   idx,
-			ChunkCount:   len(parsed.Chunks),
-			Mode:         mode,
-			Source:       document.Source,
-		})
-		if err != nil {
-			return domain.Analysis{}, apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d", idx+1), err)
-		}
-
-		chunks = append(chunks, domain.AnalysisChunk{
-			ID:             fmt.Sprintf("chunk_%d_%d", now.UnixNano(), idx),
-			ChunkIndex:     idx,
-			ChunkText:      chunk,
-			PromptVersion:  result.PromptVersion,
-			SystemPrompt:   result.SystemPrompt,
-			UserPrompt:     result.UserPrompt,
-			RawLLMResponse: result.RawResponse,
-			CreatedAt:      time.Now().UTC(),
-		})
-		aggregatedFindings = append(aggregatedFindings, result.Findings...)
+	chunks, findings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, now)
+	if err != nil {
+		return domain.Analysis{}, err
 	}
+	aggregatedFindings = findings
 
 	completedAt := time.Now().UTC()
 	analysis := domain.Analysis{
@@ -172,6 +152,92 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	return analysis, nil
+}
+
+func (s *AnalysisService) analyzeChunksByRoles(
+	ctx context.Context,
+	document domain.Document,
+	parsed parser.ParsedDocument,
+	mode domain.AnalysisMode,
+	now time.Time,
+) ([]domain.AnalysisChunk, []domain.Finding, error) {
+	roles := domain.DefaultReviewerRoles()
+	type llmOutcome struct {
+		chunk    domain.AnalysisChunk
+		findings []domain.Finding
+	}
+
+	outcomes := make([]llmOutcome, 0, len(parsed.Chunks)*len(roles))
+	g, groupCtx := errgroup.WithContext(ctx)
+	g.SetLimit(len(roles))
+
+	results := make(chan llmOutcome, len(parsed.Chunks)*len(roles))
+
+	for idx, chunkText := range parsed.Chunks {
+		for _, role := range roles {
+			idx := idx
+			chunkText := chunkText
+			role := role
+
+			g.Go(func() error {
+				result, err := s.llmClient.AnalyzeChunk(groupCtx, llm.AnalyzeInput{
+					DocumentName: document.Name,
+					DocumentText: parsed.Text,
+					ChunkText:    chunkText,
+					ChunkIndex:   idx,
+					ChunkCount:   len(parsed.Chunks),
+					Mode:         mode,
+					Source:       document.Source,
+					Role:         role,
+				})
+				if err != nil {
+					return apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d for role %s", idx+1, role), err)
+				}
+
+				results <- llmOutcome{
+					chunk: domain.AnalysisChunk{
+						ID:             fmt.Sprintf("chunk_%d_%d_%s", now.UnixNano(), idx, role),
+						Role:           role,
+						ChunkIndex:     idx,
+						ChunkText:      chunkText,
+						PromptVersion:  result.PromptVersion,
+						SystemPrompt:   result.SystemPrompt,
+						UserPrompt:     result.UserPrompt,
+						RawLLMResponse: result.RawResponse,
+						CreatedAt:      time.Now().UTC(),
+					},
+					findings: result.Findings,
+				}
+				return nil
+			})
+		}
+	}
+
+	if err := g.Wait(); err != nil {
+		close(results)
+		return nil, nil, err
+	}
+	close(results)
+
+	for outcome := range results {
+		outcomes = append(outcomes, outcome)
+	}
+
+	sort.SliceStable(outcomes, func(i, j int) bool {
+		if outcomes[i].chunk.ChunkIndex == outcomes[j].chunk.ChunkIndex {
+			return outcomes[i].chunk.Role < outcomes[j].chunk.Role
+		}
+		return outcomes[i].chunk.ChunkIndex < outcomes[j].chunk.ChunkIndex
+	})
+
+	chunks := make([]domain.AnalysisChunk, 0, len(outcomes))
+	findings := make([]domain.Finding, 0)
+	for _, outcome := range outcomes {
+		chunks = append(chunks, outcome.chunk)
+		findings = append(findings, outcome.findings...)
+	}
+
+	return chunks, findings, nil
 }
 
 func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.Analysis, error) {

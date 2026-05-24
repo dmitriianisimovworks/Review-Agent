@@ -25,6 +25,7 @@ type AnalyzeInput struct {
 	ChunkCount   int
 	Mode         domain.AnalysisMode
 	Source       domain.DocumentSource
+	Role         domain.ReviewerRole
 }
 
 type ChunkAnalysisResult struct {
@@ -104,6 +105,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 		ChunkCount:   input.ChunkCount,
 		Mode:         input.Mode,
 		Source:       input.Source,
+		Role:         input.Role,
 	})
 
 	payload := chatCompletionRequest{
@@ -169,7 +171,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 	for _, finding := range parsed.Findings {
 		findings = append(findings, domain.Finding{
 			ChunkIndex:  input.ChunkIndex,
-			Role:        normalizeRole(finding.Role),
+			Role:        normalizeRole(input.Role, finding.Role),
 			Category:    normalizeCategory(finding.Category),
 			Severity:    normalizeSeverity(finding.Severity),
 			Problem:     strings.TrimSpace(finding.Problem),
@@ -181,7 +183,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 
 	return ChunkAnalysisResult{
 		Findings:      findings,
-		PromptVersion: "v1",
+		PromptVersion: "v2-role-based",
 		SystemPrompt:  builtPrompt.System,
 		UserPrompt:    builtPrompt.User,
 		RawResponse:   content,
@@ -221,10 +223,10 @@ func normalizeSeverity(input string) domain.Severity {
 	}
 }
 
-func normalizeRole(input string) string {
+func normalizeRole(fallback domain.ReviewerRole, input string) string {
 	value := strings.TrimSpace(strings.ToLower(input))
 	if value == "" {
-		return "solution_architect"
+		return string(fallback)
 	}
 
 	return strings.ReplaceAll(value, " ", "_")

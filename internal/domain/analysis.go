@@ -35,6 +35,17 @@ type Analysis struct {
 	CompletedAt  *time.Time
 }
 
+type ReviewerRole string
+
+const (
+	ReviewerRoleTechLead               ReviewerRole = "tech_lead"
+	ReviewerRoleSolutionArchitect      ReviewerRole = "solution_architect"
+	ReviewerRoleSeniorBackendEngineer  ReviewerRole = "senior_backend_engineer"
+	ReviewerRoleSeniorFrontendEngineer ReviewerRole = "senior_frontend_engineer"
+	ReviewerRoleDevOpsReviewer         ReviewerRole = "devops_reviewer"
+	ReviewerRoleQAReviewer             ReviewerRole = "qa_reviewer"
+)
+
 type AnalysisMode string
 
 const (
@@ -56,6 +67,7 @@ type Finding struct {
 type AnalysisChunk struct {
 	ID             string
 	AnalysisID     string
+	Role           ReviewerRole
 	ChunkIndex     int
 	ChunkText      string
 	PromptVersion  string
@@ -63,4 +75,15 @@ type AnalysisChunk struct {
 	UserPrompt     string
 	RawLLMResponse string
 	CreatedAt      time.Time
+}
+
+func DefaultReviewerRoles() []ReviewerRole {
+	return []ReviewerRole{
+		ReviewerRoleTechLead,
+		ReviewerRoleSolutionArchitect,
+		ReviewerRoleSeniorBackendEngineer,
+		ReviewerRoleSeniorFrontendEngineer,
+		ReviewerRoleDevOpsReviewer,
+		ReviewerRoleQAReviewer,
+	}
 }
