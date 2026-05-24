@@ -8,6 +8,7 @@ import (
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/repository"
+	"technical-specification-review-agent/internal/reviewconfig"
 )
 
 type CommentService struct {
@@ -15,6 +16,7 @@ type CommentService struct {
 	analysisRepo     repository.AnalysisRepository
 	commentFormatter comment.Formatter
 	commentPublisher google.CommentPublisher
+	reviewConfig     reviewconfig.Provider
 }
 
 type PublishCommentsInput struct {
@@ -35,19 +37,25 @@ func NewCommentService(
 	analysisRepo repository.AnalysisRepository,
 	commentFormatter comment.Formatter,
 	commentPublisher google.CommentPublisher,
+	reviewConfig reviewconfig.Provider,
 ) *CommentService {
 	return &CommentService{
 		documentRepo:     documentRepo,
 		analysisRepo:     analysisRepo,
 		commentFormatter: commentFormatter,
 		commentPublisher: commentPublisher,
+		reviewConfig:     reviewConfig,
 	}
 }
 
 func (s *CommentService) PublishComments(ctx context.Context, input PublishCommentsInput) (PublishCommentsResult, error) {
 	mode := input.Mode
 	if mode == "" {
-		mode = comment.PublishModeBoth
+		settings, err := s.loadReviewConfig()
+		if err != nil {
+			return PublishCommentsResult{}, err
+		}
+		mode = settings.PublishMode()
 	}
 
 	analysis, err := s.analysisRepo.GetByID(ctx, input.AnalysisID)
@@ -88,4 +96,19 @@ func (s *CommentService) PublishComments(ctx context.Context, input PublishComme
 		PublishedCount: len(payload),
 		PublishMode:    string(mode),
 	}, nil
+}
+
+func (s *CommentService) loadReviewConfig() (reviewconfig.Settings, error) {
+	if s.reviewConfig == nil {
+		return reviewconfig.Settings{
+			InlineComments:  true,
+			SummaryComments: true,
+		}, nil
+	}
+
+	settings, err := s.reviewConfig.Load()
+	if err != nil {
+		return reviewconfig.Settings{}, apperrors.Wrap(apperrors.KindInvalidArgument, "failed to load review config", err)
+	}
+	return settings, nil
 }

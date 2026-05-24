@@ -31,6 +31,15 @@ type AnalyzeInput struct {
 	Memory       domain.ReviewMemory
 }
 
+type AnalyzeSectionPairInput struct {
+	DocumentName string
+	Source       domain.DocumentSource
+	Mode         domain.AnalysisMode
+	SectionA     domain.DocumentSection
+	SectionB     domain.DocumentSection
+	Memory       domain.ReviewMemory
+}
+
 type ChunkAnalysisResult struct {
 	Findings      []domain.Finding
 	PromptVersion string
@@ -41,6 +50,7 @@ type ChunkAnalysisResult struct {
 
 type Client interface {
 	AnalyzeChunk(ctx context.Context, input AnalyzeInput) (ChunkAnalysisResult, error)
+	AnalyzeSectionPair(ctx context.Context, input AnalyzeSectionPairInput) (ChunkAnalysisResult, error)
 }
 
 type OpenAICompatibleClient struct {
@@ -114,6 +124,38 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 		Memory:       input.Memory,
 	})
 
+	return c.executePrompt(ctx, builtPrompt, input.Role, input.ChunkText, input.ChunkIndex, domain.DocumentSection{
+		Title: input.SectionTitle,
+		Level: input.SectionLevel,
+	}, nil)
+}
+
+func (c *OpenAICompatibleClient) AnalyzeSectionPair(ctx context.Context, input AnalyzeSectionPairInput) (ChunkAnalysisResult, error) {
+	if strings.TrimSpace(c.apiKey) == "" {
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, "llm api key is not configured")
+	}
+
+	builtPrompt := c.promptBuilder.BuildCrossSectionContradiction(prompt.CrossSectionInput{
+		DocumentName: input.DocumentName,
+		Source:       input.Source,
+		Mode:         input.Mode,
+		SectionA:     input.SectionA,
+		SectionB:     input.SectionB,
+		Memory:       input.Memory,
+	})
+
+	return c.executePrompt(ctx, builtPrompt, domain.ReviewerRoleSolutionArchitect, input.SectionA.Content+"\n\n"+input.SectionB.Content, -1, input.SectionA, &input.SectionB)
+}
+
+func (c *OpenAICompatibleClient) executePrompt(
+	ctx context.Context,
+	builtPrompt prompt.BuiltPrompt,
+	fallbackRole domain.ReviewerRole,
+	sourceChunk string,
+	chunkIndex int,
+	section domain.DocumentSection,
+	relatedSection *domain.DocumentSection,
+) (ChunkAnalysisResult, error) {
 	payload := chatCompletionRequest{
 		Model: c.model,
 		Messages: []chatMessage{
@@ -179,25 +221,42 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 
 	findings := make([]domain.Finding, 0, len(parsed.Findings))
 	for _, finding := range parsed.Findings {
-		findings = append(findings, domain.Finding{
-			ChunkIndex:  input.ChunkIndex,
-			Role:        normalizeRole(input.Role, finding.Role),
-			Category:    normalizeCategory(finding.Category),
-			Severity:    normalizeSeverity(finding.Severity),
-			Problem:     strings.TrimSpace(finding.Problem),
-			WhyItIsBad:  strings.TrimSpace(finding.WhyItIsBad),
-			HowToFix:    strings.TrimSpace(finding.HowToFix),
-			SourceChunk: input.ChunkText,
-		})
+		item := domain.Finding{
+			ChunkIndex:   chunkIndex,
+			Role:         normalizeRole(fallbackRole, finding.Role),
+			Category:     normalizeCategory(finding.Category),
+			Severity:     normalizeSeverity(finding.Severity),
+			Problem:      strings.TrimSpace(finding.Problem),
+			WhyItIsBad:   strings.TrimSpace(finding.WhyItIsBad),
+			HowToFix:     strings.TrimSpace(finding.HowToFix),
+			SourceChunk:  sourceChunk,
+			SectionID:    section.ID,
+			SectionTitle: section.Title,
+		}
+		if relatedSection != nil {
+			item.RelatedSectionID = relatedSection.ID
+			item.RelatedSectionTitle = relatedSection.Title
+		}
+		findings = append(findings, item)
 	}
 
 	return ChunkAnalysisResult{
 		Findings:      findings,
-		PromptVersion: "v3-role-memory",
+		PromptVersion: promptVersion(chunkIndex, relatedSection != nil),
 		SystemPrompt:  builtPrompt.System,
 		UserPrompt:    builtPrompt.User,
 		RawResponse:   content,
 	}, nil
+}
+
+func promptVersion(chunkIndex int, crossSection bool) string {
+	if crossSection {
+		return "v4-cross-section"
+	}
+	if chunkIndex >= 0 {
+		return "v3-role-memory"
+	}
+	return "v3-role-memory"
 }
 
 func parseChunkAnalysis(content string) (chunkAnalysisResponse, error) {

@@ -15,12 +15,12 @@ import (
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
-	"technical-specification-review-agent/internal/parser"
 	platformpostgres "technical-specification-review-agent/internal/platform/postgres"
 	platformredis "technical-specification-review-agent/internal/platform/redis"
 	"technical-specification-review-agent/internal/prompt"
 	postgresrepo "technical-specification-review-agent/internal/repository/postgres"
 	redisrepo "technical-specification-review-agent/internal/repository/redis"
+	"technical-specification-review-agent/internal/reviewconfig"
 	"technical-specification-review-agent/internal/service"
 )
 
@@ -71,13 +71,16 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	documentParser := parser.NewChunkingParser(cfg.Document)
 	documentRepo := postgresrepo.NewDocumentRepository(pgPool)
 	analysisRepo := postgresrepo.NewAnalysisRepository(pgPool)
 	googleOAuthRepo := postgresrepo.NewGoogleOAuthConnectionRepository(pgPool)
 	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
 	promptBuilder := prompt.NewDefaultBuilder()
 	commentFormatter := comment.NewDefaultFormatter()
+	reviewSettings := reviewconfig.NewLoader(reviewconfig.DefaultPath, reviewconfig.Defaults{
+		ChunkSize: cfg.Document.ChunkSize,
+		MaxChunks: cfg.Document.MaxChunks,
+	})
 	llmClient := llm.NewOpenAICompatibleClient(cfg.LLM, promptBuilder)
 	googleOAuthProvider := google.NewOAuthService(cfg.Google)
 	documentReader, err := google.NewServiceAccountReader(ctx, cfg.Google.ServiceAccountFile)
@@ -97,18 +100,20 @@ func New() (*App, error) {
 		documentRepo,
 		analysisRepo,
 		analysisCache,
-		documentParser,
 		llmClient,
 		documentReader,
 		docsPublisher,
 		cfg.LLM.Provider,
 		cfg.LLM.Model,
+		cfg.Document,
+		reviewSettings,
 	)
 	commentService := service.NewCommentService(
 		documentRepo,
 		analysisRepo,
 		commentFormatter,
 		docsPublisher,
+		reviewSettings,
 	)
 	googleOAuthService := service.NewGoogleOAuthService(
 		googleOAuthRepo,

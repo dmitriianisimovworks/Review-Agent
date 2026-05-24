@@ -74,6 +74,41 @@ Example incremental review for uploads:
 
 In `incremental_review`, the prompt receives prior findings, prior summaries, and architectural notes from previous runs in the same review thread. The backend also suppresses exact known duplicates from previous iterations.
 
+## Review Config
+
+The backend also supports an optional project-level review config file:
+
+```yaml
+review:
+  architecture: true
+  backend: true
+  frontend: true
+  devops: true
+  qa: true
+
+severity:
+  critical_block_merge: true
+
+comments:
+  inline: true
+  summary: true
+
+context:
+  memory_enabled: true
+
+document:
+  chunk_size: 5000
+```
+
+Place it at `.ai-spec-review.yml` in the working directory. This config controls review behavior only:
+
+- enabled reviewer roles;
+- default publish strategy for comments;
+- whether review memory is enabled;
+- document chunk size for analysis.
+
+Infrastructure and secrets remain environment-based.
+
 The backend reads the document through a Google service account configured via:
 
 - `GOOGLE_SERVICE_ACCOUNT_FILE`

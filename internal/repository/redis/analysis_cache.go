@@ -16,18 +16,21 @@ type AnalysisCache struct {
 }
 
 type cachedAnalysis struct {
-	ID           string                `json:"id"`
-	DocumentID   string                `json:"document_id"`
-	Mode         domain.AnalysisMode   `json:"mode"`
-	Status       domain.AnalysisStatus `json:"status"`
-	Provider     string                `json:"provider"`
-	Model        string                `json:"model"`
-	ChunkCount   int                   `json:"chunk_count"`
-	Findings     []domain.Finding      `json:"findings"`
-	Summary      string                `json:"summary"`
-	ErrorMessage string                `json:"error_message"`
-	CreatedAt    time.Time             `json:"created_at"`
-	CompletedAt  *time.Time            `json:"completed_at"`
+	ID                 string                `json:"id"`
+	DocumentID         string                `json:"document_id"`
+	Mode               domain.AnalysisMode   `json:"mode"`
+	Status             domain.AnalysisStatus `json:"status"`
+	Provider           string                `json:"provider"`
+	Model              string                `json:"model"`
+	ChunkCount         int                   `json:"chunk_count"`
+	MergeBlocked       bool                  `json:"merge_blocked"`
+	BlockingFindings   int                   `json:"blocking_findings"`
+	SuppressedFindings int                   `json:"suppressed_findings"`
+	Findings           []domain.Finding      `json:"findings"`
+	Summary            string                `json:"summary"`
+	ErrorMessage       string                `json:"error_message"`
+	CreatedAt          time.Time             `json:"created_at"`
+	CompletedAt        *time.Time            `json:"completed_at"`
 }
 
 func NewAnalysisCache(client *goredis.Client, ttl time.Duration) *AnalysisCache {
@@ -67,34 +70,40 @@ func cacheKey(id string) string {
 
 func toCachedAnalysis(analysis domain.Analysis) cachedAnalysis {
 	return cachedAnalysis{
-		ID:           analysis.ID,
-		DocumentID:   analysis.DocumentID,
-		Mode:         analysis.Mode,
-		Status:       analysis.Status,
-		Provider:     analysis.Provider,
-		Model:        analysis.Model,
-		ChunkCount:   analysis.ChunkCount,
-		Findings:     analysis.Findings,
-		Summary:      analysis.Summary,
-		ErrorMessage: analysis.ErrorMessage,
-		CreatedAt:    analysis.CreatedAt,
-		CompletedAt:  analysis.CompletedAt,
+		ID:                 analysis.ID,
+		DocumentID:         analysis.DocumentID,
+		Mode:               analysis.Mode,
+		Status:             analysis.Status,
+		Provider:           analysis.Provider,
+		Model:              analysis.Model,
+		ChunkCount:         analysis.ChunkCount,
+		MergeBlocked:       analysis.MergeBlocked,
+		BlockingFindings:   analysis.BlockingFindings,
+		SuppressedFindings: analysis.SuppressedFindings,
+		Findings:           analysis.Findings,
+		Summary:            analysis.Summary,
+		ErrorMessage:       analysis.ErrorMessage,
+		CreatedAt:          analysis.CreatedAt,
+		CompletedAt:        analysis.CompletedAt,
 	}
 }
 
 func (c cachedAnalysis) toDomain() domain.Analysis {
 	return domain.Analysis{
-		ID:           c.ID,
-		DocumentID:   c.DocumentID,
-		Mode:         c.Mode,
-		Status:       c.Status,
-		Provider:     c.Provider,
-		Model:        c.Model,
-		ChunkCount:   c.ChunkCount,
-		Findings:     c.Findings,
-		Summary:      c.Summary,
-		ErrorMessage: c.ErrorMessage,
-		CreatedAt:    c.CreatedAt,
-		CompletedAt:  c.CompletedAt,
+		ID:                 c.ID,
+		DocumentID:         c.DocumentID,
+		Mode:               c.Mode,
+		Status:             c.Status,
+		Provider:           c.Provider,
+		Model:              c.Model,
+		ChunkCount:         c.ChunkCount,
+		MergeBlocked:       c.MergeBlocked,
+		BlockingFindings:   c.BlockingFindings,
+		SuppressedFindings: c.SuppressedFindings,
+		Findings:           c.Findings,
+		Summary:            c.Summary,
+		ErrorMessage:       c.ErrorMessage,
+		CreatedAt:          c.CreatedAt,
+		CompletedAt:        c.CompletedAt,
 	}
 }

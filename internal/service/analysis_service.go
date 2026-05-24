@@ -10,26 +10,30 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"technical-specification-review-agent/internal/apperrors"
+	"technical-specification-review-agent/internal/config"
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
 	"technical-specification-review-agent/internal/parser"
 	"technical-specification-review-agent/internal/repository"
+	"technical-specification-review-agent/internal/reviewconfig"
 )
 
 type AnalysisService struct {
 	documentRepo     repository.DocumentRepository
 	analysisRepo     repository.AnalysisRepository
 	analysisCache    repository.AnalysisCache
-	documentParser   parser.DocumentParser
 	llmClient        llm.Client
 	documentReader   google.DocumentReader
 	commentPublisher google.CommentPublisher
 	llmProvider      string
 	llmModel         string
+	documentConfig   config.DocumentConfig
+	reviewConfig     reviewconfig.Provider
 }
 
 const maxFindingsPerRole = 5
+const maxContradictionPairs = 8
 
 type StartAnalysisInput struct {
 	Name         string
@@ -44,23 +48,25 @@ func NewAnalysisService(
 	documentRepo repository.DocumentRepository,
 	analysisRepo repository.AnalysisRepository,
 	analysisCache repository.AnalysisCache,
-	documentParser parser.DocumentParser,
 	llmClient llm.Client,
 	documentReader google.DocumentReader,
 	commentPublisher google.CommentPublisher,
 	llmProvider string,
 	llmModel string,
+	documentConfig config.DocumentConfig,
+	reviewConfig reviewconfig.Provider,
 ) *AnalysisService {
 	return &AnalysisService{
 		documentRepo:     documentRepo,
 		analysisRepo:     analysisRepo,
 		analysisCache:    analysisCache,
-		documentParser:   documentParser,
 		llmClient:        llmClient,
 		documentReader:   documentReader,
 		commentPublisher: commentPublisher,
 		llmProvider:      llmProvider,
 		llmModel:         llmModel,
+		documentConfig:   documentConfig,
+		reviewConfig:     reviewConfig,
 	}
 }
 
@@ -73,6 +79,10 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	mode := input.Mode
 	if mode == "" {
 		mode = domain.AnalysisModeFullReview
+	}
+	settings, err := s.loadReviewConfig()
+	if err != nil {
+		return domain.Analysis{}, err
 	}
 
 	content := strings.TrimSpace(input.Content)
@@ -106,11 +116,17 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	reviewKey = deriveReviewKey(source, reviewKey, externalID, documentName)
-	previousAnalyses, err := s.analysisRepo.ListByReviewKey(ctx, reviewKey, reviewMemoryRunLimit)
-	if err != nil {
-		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to load review history", err)
+	var previousAnalyses []domain.Analysis
+	if settings.MemoryEnabled {
+		previousAnalyses, err = s.analysisRepo.ListByReviewKey(ctx, reviewKey, reviewMemoryRunLimit)
+		if err != nil {
+			return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to load review history", err)
+		}
 	}
-	memory := buildReviewMemory(reviewKey, previousAnalyses)
+	promptMemory := buildReviewMemory(reviewKey, previousAnalyses)
+	if !settings.MemoryEnabled {
+		promptMemory = domain.ReviewMemory{}
+	}
 
 	document := domain.Document{
 		ID:         fmt.Sprintf("doc_%d", now.UnixNano()),
@@ -124,7 +140,11 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		CreatedAt:  now,
 	}
 
-	parsed, err := s.documentParser.Parse(ctx, parser.ParseInput{
+	documentParser := parser.NewChunkingParser(config.DocumentConfig{
+		ChunkSize: settings.ChunkSize,
+		MaxChunks: settings.MaxChunks,
+	})
+	parsed, err := documentParser.Parse(ctx, parser.ParseInput{
 		Content:  document.RawContent,
 		Sections: document.Sections,
 	})
@@ -138,28 +158,42 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	aggregatedFindings := make([]domain.Finding, 0)
-	chunks, findings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, now, memory)
+	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, now, promptMemory, settings.Roles)
 	if err != nil {
 		return domain.Analysis{}, err
 	}
 	aggregatedFindings = findings
+	contradictionFindings, err := s.analyzeCrossSectionContradictions(ctx, document, parsed, mode, promptMemory)
+	if err != nil {
+		return domain.Analysis{}, err
+	}
+	aggregatedFindings = append(aggregatedFindings, contradictionFindings...)
+	aggregatedFindings = deduplicateFindings(aggregatedFindings)
+	analysisMemory := promptMemory
+	if settings.MemoryEnabled {
+		analysisMemory = enrichReviewMemory(promptMemory, document, chunks, aggregatedFindings, mode)
+	}
 
 	completedAt := time.Now().UTC()
+	mergeBlocked, blockingFindings := evaluateMergePolicy(aggregatedFindings, settings)
 	analysis := domain.Analysis{
-		ID:               fmt.Sprintf("analysis_%d", completedAt.UnixNano()),
-		DocumentID:       document.ID,
-		Mode:             mode,
-		Status:           domain.AnalysisStatusCompleted,
-		Provider:         s.llmProvider,
-		Model:            s.llmModel,
-		ChunkCount:       len(parsed.Chunks),
-		Findings:         aggregatedFindings,
-		Chunks:           chunks,
-		Summary:          buildSummary(aggregatedFindings, len(parsed.Chunks)),
-		Memory:           memory,
-		DocumentSections: parsed.Sections,
-		CreatedAt:        now,
-		CompletedAt:      &completedAt,
+		ID:                 fmt.Sprintf("analysis_%d", completedAt.UnixNano()),
+		DocumentID:         document.ID,
+		Mode:               mode,
+		Status:             domain.AnalysisStatusCompleted,
+		Provider:           s.llmProvider,
+		Model:              s.llmModel,
+		ChunkCount:         len(parsed.Chunks),
+		MergeBlocked:       mergeBlocked,
+		BlockingFindings:   blockingFindings,
+		SuppressedFindings: suppressedFindings,
+		Findings:           aggregatedFindings,
+		Chunks:             chunks,
+		Summary:            buildSummary(aggregatedFindings, len(parsed.Chunks)),
+		Memory:             analysisMemory,
+		DocumentSections:   parsed.Sections,
+		CreatedAt:          now,
+		CompletedAt:        &completedAt,
 	}
 	for i := range analysis.Chunks {
 		analysis.Chunks[i].AnalysisID = analysis.ID
@@ -182,8 +216,8 @@ func (s *AnalysisService) analyzeChunksByRoles(
 	mode domain.AnalysisMode,
 	now time.Time,
 	memory domain.ReviewMemory,
-) ([]domain.AnalysisChunk, []domain.Finding, error) {
-	roles := domain.DefaultReviewerRoles()
+	roles []domain.ReviewerRole,
+) ([]domain.AnalysisChunk, []domain.Finding, int, error) {
 	type llmOutcome struct {
 		chunk    domain.AnalysisChunk
 		findings []domain.Finding
@@ -219,6 +253,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 				if err != nil {
 					return apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d for role %s", idx+1, role), err)
 				}
+				annotateChunkFindings(result.Findings, descriptor, idx)
 
 				results <- llmOutcome{
 					chunk: domain.AnalysisChunk{
@@ -245,7 +280,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 
 	if err := g.Wait(); err != nil {
 		close(results)
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	close(results)
 
@@ -267,7 +302,157 @@ func (s *AnalysisService) analyzeChunksByRoles(
 		findings = append(findings, outcome.findings...)
 	}
 
-	return chunks, filterFindingsByMode(filterRoleFindings(findings), memory, mode), nil
+	filtered, suppressedCount := filterFindingsByMode(filterRoleFindings(findings), memory, mode)
+	return chunks, filtered, suppressedCount, nil
+}
+
+func (s *AnalysisService) analyzeCrossSectionContradictions(
+	ctx context.Context,
+	document domain.Document,
+	parsed parser.ParsedDocument,
+	mode domain.AnalysisMode,
+	memory domain.ReviewMemory,
+) ([]domain.Finding, error) {
+	sections := parsed.Sections
+	if len(sections) < 2 {
+		return nil, nil
+	}
+
+	pairs := buildContradictionPairs(sections, maxContradictionPairs)
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+
+	results := make([]domain.Finding, 0, len(pairs)*2)
+	for _, pair := range pairs {
+		outcome, err := s.llmClient.AnalyzeSectionPair(ctx, llm.AnalyzeSectionPairInput{
+			DocumentName: document.Name,
+			Source:       document.Source,
+			Mode:         mode,
+			SectionA:     pair.left,
+			SectionB:     pair.right,
+			Memory:       memory,
+		})
+		if err != nil {
+			return nil, apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed cross-section contradiction analysis for %s vs %s", pair.left.Title, pair.right.Title), err)
+		}
+		for _, finding := range outcome.Findings {
+			finding.Category = "contradiction"
+			if finding.Role == "" {
+				finding.Role = string(domain.ReviewerRoleSolutionArchitect)
+			}
+			if finding.SectionID == "" {
+				finding.SectionID = pair.left.ID
+				finding.SectionTitle = pair.left.Title
+			}
+			if finding.RelatedSectionID == "" {
+				finding.RelatedSectionID = pair.right.ID
+				finding.RelatedSectionTitle = pair.right.Title
+			}
+			results = append(results, finding)
+		}
+	}
+
+	return results, nil
+}
+
+type contradictionPair struct {
+	left  domain.DocumentSection
+	right domain.DocumentSection
+	score int
+}
+
+func buildContradictionPairs(sections []domain.DocumentSection, limit int) []contradictionPair {
+	if len(sections) < 2 || limit <= 0 {
+		return nil
+	}
+
+	pairs := make([]contradictionPair, 0, len(sections))
+	for i := 0; i < len(sections); i++ {
+		for j := i + 1; j < len(sections); j++ {
+			score := contradictionPairScore(sections[i], sections[j], i, j)
+			pairs = append(pairs, contradictionPair{
+				left:  sections[i],
+				right: sections[j],
+				score: score,
+			})
+		}
+	}
+
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if pairs[i].score == pairs[j].score {
+			if pairs[i].left.Title == pairs[j].left.Title {
+				return pairs[i].right.Title < pairs[j].right.Title
+			}
+			return pairs[i].left.Title < pairs[j].left.Title
+		}
+		return pairs[i].score > pairs[j].score
+	})
+
+	if len(pairs) > limit {
+		pairs = pairs[:limit]
+	}
+	return pairs
+}
+
+func contradictionPairScore(left, right domain.DocumentSection, leftIndex, rightIndex int) int {
+	score := 0
+	leftTokens := titleTokens(left.Title)
+	rightTokens := titleTokens(right.Title)
+	rightSet := make(map[string]struct{}, len(rightTokens))
+	for _, token := range rightTokens {
+		rightSet[token] = struct{}{}
+	}
+	for _, token := range leftTokens {
+		if _, exists := rightSet[token]; exists {
+			score += 5
+		}
+	}
+	if left.Level > 0 && left.Level == right.Level {
+		score += 2
+	}
+	if distance := rightIndex - leftIndex; distance > 0 && distance <= 2 {
+		score += 3
+	}
+	if mayContainContradictionSignals(left.Content) || mayContainContradictionSignals(right.Content) {
+		score += 4
+	}
+	return score
+}
+
+func titleTokens(value string) []string {
+	value = strings.ToLower(normalizeKeyPart(value))
+	if value == "" {
+		return nil
+	}
+	raw := strings.Split(value, "_")
+	result := make([]string, 0, len(raw))
+	for _, token := range raw {
+		if len(token) < 4 {
+			continue
+		}
+		result = append(result, token)
+	}
+	return result
+}
+
+func mayContainContradictionSignals(value string) bool {
+	lowered := strings.ToLower(value)
+	signals := []string{"должен", "не должен", "только", "всегда", "никогда", "запрещ", "разреш", "обяз", "может"}
+	for _, signal := range signals {
+		if strings.Contains(lowered, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func annotateChunkFindings(findings []domain.Finding, descriptor parser.ParsedChunk, chunkIndex int) {
+	for idx := range findings {
+		findings[idx].ChunkIndex = chunkIndex
+		findings[idx].SectionID = descriptor.SectionID
+		findings[idx].SectionTitle = descriptor.SectionTitle
+	}
 }
 
 func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.Analysis, error) {
@@ -366,9 +551,43 @@ func filterRoleFindings(findings []domain.Finding) []domain.Finding {
 	return filtered
 }
 
-func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory, mode domain.AnalysisMode) []domain.Finding {
+func (s *AnalysisService) loadReviewConfig() (reviewconfig.Settings, error) {
+	if s.reviewConfig == nil {
+		return reviewconfig.Settings{
+			Roles:           domain.DefaultReviewerRoles(),
+			InlineComments:  true,
+			SummaryComments: true,
+			MemoryEnabled:   true,
+			ChunkSize:       s.documentConfig.ChunkSize,
+			MaxChunks:       s.documentConfig.MaxChunks,
+		}, nil
+	}
+
+	settings, err := s.reviewConfig.Load()
+	if err != nil {
+		return reviewconfig.Settings{}, apperrors.Wrap(apperrors.KindInvalidArgument, "failed to load review config", err)
+	}
+	return settings, nil
+}
+
+func evaluateMergePolicy(findings []domain.Finding, settings reviewconfig.Settings) (bool, int) {
+	if !settings.CriticalBlockMerge {
+		return false, 0
+	}
+
+	blockingFindings := 0
+	for _, finding := range findings {
+		if finding.Severity == domain.SeverityCritical {
+			blockingFindings++
+		}
+	}
+
+	return blockingFindings > 0, blockingFindings
+}
+
+func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory, mode domain.AnalysisMode) ([]domain.Finding, int) {
 	if mode != domain.AnalysisModeIncrementalReview || !memory.HasContext() || len(memory.KnownFindings) == 0 {
-		return findings
+		return findings, 0
 	}
 
 	known := make(map[string]domain.Finding, len(memory.KnownFindings))
@@ -377,6 +596,7 @@ func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory,
 	}
 
 	filtered := make([]domain.Finding, 0, len(findings))
+	suppressedCount := 0
 	for _, finding := range findings {
 		existing, exists := known[memoryFindingKey(finding)]
 		if !exists {
@@ -385,10 +605,12 @@ func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory,
 		}
 		if findingScore(finding) > findingScore(existing) {
 			filtered = append(filtered, finding)
+			continue
 		}
+		suppressedCount++
 	}
 
-	return filtered
+	return filtered, suppressedCount
 }
 
 func deduplicateFindings(findings []domain.Finding) []domain.Finding {

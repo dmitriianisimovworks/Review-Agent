@@ -21,6 +21,15 @@ type Input struct {
 	Memory       domain.ReviewMemory
 }
 
+type CrossSectionInput struct {
+	DocumentName string
+	Source       domain.DocumentSource
+	Mode         domain.AnalysisMode
+	SectionA     domain.DocumentSection
+	SectionB     domain.DocumentSection
+	Memory       domain.ReviewMemory
+}
+
 type BuiltPrompt struct {
 	System string
 	User   string
@@ -28,6 +37,7 @@ type BuiltPrompt struct {
 
 type Builder interface {
 	Build(input Input) BuiltPrompt
+	BuildCrossSectionContradiction(input CrossSectionInput) BuiltPrompt
 }
 
 type DefaultBuilder struct{}
@@ -87,8 +97,6 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
       "how_to_fix": "конкретная рекомендация на русском языке"
     }
   ]
-}
-
 Правила:
 - все текстовые поля `+"`problem`"+`, `+"`why_it_is_bad`"+` и `+"`how_to_fix`"+` должны быть только на русском языке;
 - role должен быть одним из: tech_lead, solution_architect, senior_backend_engineer, senior_frontend_engineer, devops_reviewer, qa_reviewer;
@@ -111,6 +119,55 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 		formatSectionContext(input.SectionTitle, input.SectionLevel),
 		formatMemorySection(input.Memory, role),
 		input.ChunkText,
+	)
+
+	return BuiltPrompt{
+		System: system,
+		User:   user,
+	}
+}
+
+func (b *DefaultBuilder) BuildCrossSectionContradiction(input CrossSectionInput) BuiltPrompt {
+	system := strings.TrimSpace(`
+Ты работаешь как Solution Architect и ищешь только противоречия между двумя разделами технической спецификации.
+
+Твоя задача:
+- сравнить два раздела между собой;
+- найти conflicting requirements, inconsistent logic, conflicting permissions, contradictory lifecycle rules;
+- вернуть только реальные противоречия, а не просто разные темы;
+- если противоречия нет, вернуть {"findings":[]}.
+
+Не хвали документ.
+Не переписывай разделы.
+Не давай общие замечания.
+Не возвращай замечания, которые не являются межсекционным конфликтом.
+Верни максимум 2 сильных противоречия.
+
+Верни только валидный JSON со строго такой структурой:
+{
+  "findings": [
+    {
+      "role": "solution_architect",
+      "category": "contradiction",
+      "severity": "ERROR",
+      "problem": "краткое описание противоречия на русском языке с упоминанием обоих разделов",
+      "why_it_is_bad": "практическое последствие на русском языке",
+      "how_to_fix": "конкретный способ устранить конфликт на русском языке"
+    }
+  ]
+}
+`)
+
+	user := fmt.Sprintf(
+		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\n%s\nСравни два раздела и найди только межсекционные противоречия.\n\nРаздел A: %s\n%s\n\nРаздел B: %s\n%s",
+		defaultString(string(input.Mode), string(domain.AnalysisModeFullReview)),
+		defaultString(string(input.Source), string(domain.DocumentSourceUpload)),
+		defaultString(input.DocumentName, "unnamed_document"),
+		formatCrossSectionMemory(input.Memory),
+		defaultString(input.SectionA.Title, "Section A"),
+		input.SectionA.Content,
+		defaultString(input.SectionB.Title, "Section B"),
+		input.SectionB.Content,
 	)
 
 	return BuiltPrompt{
@@ -224,6 +281,66 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		}
 	}
 
+	if modules := limitStrings(memory.Modules, 4); len(modules) > 0 {
+		parts = append(parts, "Известные модули и разделы документа:")
+		for idx, module := range modules {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, module))
+		}
+	}
+
+	if roles := limitStrings(memory.UserRoles, 4); len(roles) > 0 {
+		parts = append(parts, "Известные пользовательские роли:")
+		for idx, roleValue := range roles {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, roleValue))
+		}
+	}
+
+	if entities := limitStrings(memory.Entities, 4); len(entities) > 0 {
+		parts = append(parts, "Известные сущности и термины:")
+		for idx, entity := range entities {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, entity))
+		}
+	}
+
+	if glossary := limitStrings(memory.Glossary, 4); len(glossary) > 0 {
+		parts = append(parts, "Глоссарий и важные понятия из прошлых ревью:")
+		for idx, term := range glossary {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, term))
+		}
+	}
+
+	if decisions := limitStrings(memory.ArchitectureDecisions, 3); len(decisions) > 0 {
+		parts = append(parts, "Архитектурные решения и договорённости:")
+		for idx, decision := range decisions {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, decision))
+		}
+	}
+
+	if sections := limitSections(memory.Sections, 3); len(sections) > 0 {
+		parts = append(parts, "Контекст по разделам документа:")
+		for idx, section := range sections {
+			line := fmt.Sprintf("%d. %s", idx+1, section.SectionTitle)
+			if len(section.KnownProblems) > 0 {
+				line += fmt.Sprintf(" | known: %s", strings.Join(limitStrings(section.KnownProblems, 2), "; "))
+			}
+			if len(section.ResolvedProblems) > 0 {
+				line += fmt.Sprintf(" | resolved: %s", strings.Join(limitStrings(section.ResolvedProblems, 1), "; "))
+			}
+			parts = append(parts, line)
+		}
+	}
+
+	if resolved := limitResolvedFindings(memory.ResolvedFindings, 3); len(resolved) > 0 {
+		parts = append(parts, "Ранее закрытые или исчезнувшие проблемы:")
+		for idx, finding := range resolved {
+			line := fmt.Sprintf("%d. %s", idx+1, finding.Problem)
+			if strings.TrimSpace(finding.SectionTitle) != "" {
+				line += fmt.Sprintf(" [%s]", finding.SectionTitle)
+			}
+			parts = append(parts, line)
+		}
+	}
+
 	parts = append(parts, "Учитывай этот контекст как память документа и не повторяй дословно уже известные замечания без новой ценности.")
 	return strings.Join(parts, "\n") + "\n"
 }
@@ -265,6 +382,26 @@ func limitStrings(values []string, limit int) []string {
 	return values[:limit]
 }
 
+func limitSections(values []domain.MemorySection, limit int) []domain.MemorySection {
+	if limit <= 0 || len(values) == 0 {
+		return nil
+	}
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
+}
+
+func limitResolvedFindings(values []domain.FindingRef, limit int) []domain.FindingRef {
+	if limit <= 0 || len(values) == 0 {
+		return nil
+	}
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
+}
+
 func formatSectionContext(title string, level int) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -274,6 +411,33 @@ func formatSectionContext(title string, level int) string {
 		return fmt.Sprintf("Раздел документа: %s (heading level %d)\n", title, level)
 	}
 	return fmt.Sprintf("Раздел документа: %s\n", title)
+}
+
+func formatCrossSectionMemory(memory domain.ReviewMemory) string {
+	if !memory.HasContext() {
+		return ""
+	}
+
+	parts := []string{
+		fmt.Sprintf("Ключ памяти документа: %s", memory.ReviewKey),
+	}
+	if sections := limitSections(memory.Sections, 3); len(sections) > 0 {
+		parts = append(parts, "Контекст прошлых разделов:")
+		for idx, section := range sections {
+			line := fmt.Sprintf("%d. %s", idx+1, section.SectionTitle)
+			if len(section.KnownProblems) > 0 {
+				line += fmt.Sprintf(" | known: %s", strings.Join(limitStrings(section.KnownProblems, 2), "; "))
+			}
+			parts = append(parts, line)
+		}
+	}
+	if resolved := limitResolvedFindings(memory.ResolvedFindings, 2); len(resolved) > 0 {
+		parts = append(parts, "Ранее исчезнувшие конфликты/проблемы:")
+		for idx, finding := range resolved {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, finding.Problem))
+		}
+	}
+	return strings.Join(parts, "\n") + "\n"
 }
 
 var _ Builder = (*DefaultBuilder)(nil)

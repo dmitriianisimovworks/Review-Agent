@@ -31,9 +31,9 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO analysis_runs (
-			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, error_message, created_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt); err != nil {
+			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, error_message, created_at, completed_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt); err != nil {
 		return fmt.Errorf("insert analysis run: %w", err)
 	}
 
@@ -54,8 +54,12 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 		}
 
 		metadata, err := json.Marshal(map[string]any{
-			"source_chunk_length": len(finding.SourceChunk),
-			"finding_order":       idx,
+			"source_chunk_length":   len(finding.SourceChunk),
+			"finding_order":         idx,
+			"section_id":            finding.SectionID,
+			"section_title":         finding.SectionTitle,
+			"related_section_id":    finding.RelatedSectionID,
+			"related_section_title": finding.RelatedSectionTitle,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal finding metadata: %w", err)
@@ -95,6 +99,21 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 		}
 	}
 
+	if analysis.SuppressedFindings > 0 {
+		suppressionPayload, err := json.Marshal(map[string]any{
+			"suppressed_findings_count": analysis.SuppressedFindings,
+		})
+		if err != nil {
+			return fmt.Errorf("marshal suppression artifact: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO analysis_artifacts (id, analysis_run_id, artifact_type, payload_jsonb, created_at)
+			VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, $4)
+		`, analysis.ID, "suppression_report", string(suppressionPayload), time.Now().UTC()); err != nil {
+			return fmt.Errorf("insert suppression artifact: %w", err)
+		}
+	}
+
 	if len(analysis.DocumentSections) > 0 {
 		structurePayload, err := json.Marshal(map[string]any{
 			"sections": analysis.DocumentSections,
@@ -120,7 +139,7 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Analysis, error) {
 	var analysis domain.Analysis
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, COALESCE(error_message, ''), created_at, completed_at
+		SELECT id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, COALESCE(error_message, ''), created_at, completed_at
 		FROM analysis_runs
 		WHERE id = $1
 	`, id).Scan(
@@ -132,6 +151,9 @@ func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Ana
 		&analysis.Provider,
 		&analysis.Model,
 		&analysis.ChunkCount,
+		&analysis.MergeBlocked,
+		&analysis.BlockingFindings,
+		&analysis.SuppressedFindings,
 		&analysis.ErrorMessage,
 		&analysis.CreatedAt,
 		&analysis.CompletedAt,
@@ -144,7 +166,7 @@ func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Ana
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT role, category, severity, problem, why_it_is_bad, how_to_fix, source_excerpt
+		SELECT role, category, severity, problem, why_it_is_bad, how_to_fix, source_excerpt, metadata_jsonb
 		FROM findings
 		WHERE analysis_run_id = $1
 		ORDER BY created_at ASC
@@ -157,6 +179,7 @@ func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Ana
 	findings := make([]domain.Finding, 0)
 	for rows.Next() {
 		var finding domain.Finding
+		var metadata []byte
 		if err := rows.Scan(
 			&finding.Role,
 			&finding.Category,
@@ -165,12 +188,19 @@ func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Ana
 			&finding.WhyItIsBad,
 			&finding.HowToFix,
 			&finding.SourceChunk,
+			&metadata,
 		); err != nil {
 			return domain.Analysis{}, err
 		}
+		applyFindingMetadata(&finding, metadata)
 		findings = append(findings, finding)
 	}
 	analysis.Findings = findings
+	if err := r.loadMemorySnapshots(ctx, map[string]*domain.Analysis{
+		analysis.ID: &analysis,
+	}, []string{analysis.ID}); err != nil {
+		return domain.Analysis{}, err
+	}
 
 	return analysis, nil
 }
@@ -182,6 +212,7 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 
 	runRows, err := r.pool.Query(ctx, `
 		SELECT ar.id, ar.document_id, ar.mode, ar.status, ar.summary, ar.llm_provider, ar.llm_model, ar.chunk_count,
+		       ar.merge_blocked, ar.blocking_findings_count, ar.suppressed_findings_count,
 		       COALESCE(ar.error_message, ''), ar.created_at, ar.completed_at
 		FROM analysis_runs ar
 		JOIN documents d ON d.id = ar.document_id
@@ -209,6 +240,9 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 			&analysis.Provider,
 			&analysis.Model,
 			&analysis.ChunkCount,
+			&analysis.MergeBlocked,
+			&analysis.BlockingFindings,
+			&analysis.SuppressedFindings,
 			&analysis.ErrorMessage,
 			&analysis.CreatedAt,
 			&analysis.CompletedAt,
@@ -226,7 +260,7 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 	}
 
 	findingRows, err := r.pool.Query(ctx, `
-		SELECT analysis_run_id, role, category, severity, problem, why_it_is_bad, how_to_fix, source_excerpt
+		SELECT analysis_run_id, role, category, severity, problem, why_it_is_bad, how_to_fix, source_excerpt, metadata_jsonb
 		FROM findings
 		WHERE analysis_run_id = ANY($1)
 		ORDER BY created_at ASC
@@ -239,6 +273,7 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 	for findingRows.Next() {
 		var analysisID string
 		var finding domain.Finding
+		var metadata []byte
 		if err := findingRows.Scan(
 			&analysisID,
 			&finding.Role,
@@ -248,12 +283,18 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 			&finding.WhyItIsBad,
 			&finding.HowToFix,
 			&finding.SourceChunk,
+			&metadata,
 		); err != nil {
 			return nil, err
 		}
+		applyFindingMetadata(&finding, metadata)
 		if analysis := analysisByID[analysisID]; analysis != nil {
 			analysis.Findings = append(analysis.Findings, finding)
 		}
+	}
+
+	if err := r.loadMemorySnapshots(ctx, analysisByID, ids); err != nil {
+		return nil, err
 	}
 
 	sort.SliceStable(analyses, func(i, j int) bool {
@@ -261,4 +302,60 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 	})
 
 	return analyses, nil
+}
+
+func applyFindingMetadata(finding *domain.Finding, payload []byte) {
+	if len(payload) == 0 || finding == nil {
+		return
+	}
+	var metadata struct {
+		SectionID           string `json:"section_id"`
+		SectionTitle        string `json:"section_title"`
+		RelatedSectionID    string `json:"related_section_id"`
+		RelatedSectionTitle string `json:"related_section_title"`
+	}
+	if err := json.Unmarshal(payload, &metadata); err != nil {
+		return
+	}
+	finding.SectionID = metadata.SectionID
+	finding.SectionTitle = metadata.SectionTitle
+	finding.RelatedSectionID = metadata.RelatedSectionID
+	finding.RelatedSectionTitle = metadata.RelatedSectionTitle
+}
+
+func (r *AnalysisRepository) loadMemorySnapshots(ctx context.Context, analysisByID map[string]*domain.Analysis, ids []string) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT analysis_run_id, payload_jsonb
+		FROM analysis_artifacts
+		WHERE artifact_type = 'memory_snapshot' AND analysis_run_id = ANY($1)
+		ORDER BY created_at DESC
+	`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	loaded := make(map[string]struct{}, len(ids))
+	for rows.Next() {
+		var analysisID string
+		var payload []byte
+		if err := rows.Scan(&analysisID, &payload); err != nil {
+			return err
+		}
+		if _, exists := loaded[analysisID]; exists {
+			continue
+		}
+		analysis := analysisByID[analysisID]
+		if analysis == nil {
+			continue
+		}
+		var memory domain.ReviewMemory
+		if err := json.Unmarshal(payload, &memory); err != nil {
+			return fmt.Errorf("decode memory snapshot: %w", err)
+		}
+		analysis.Memory = memory
+		loaded[analysisID] = struct{}{}
+	}
+
+	return rows.Err()
 }

@@ -20,21 +20,24 @@ const (
 )
 
 type Analysis struct {
-	ID               string
-	DocumentID       string
-	Mode             AnalysisMode
-	Status           AnalysisStatus
-	Provider         string
-	Model            string
-	ChunkCount       int
-	Findings         []Finding
-	Chunks           []AnalysisChunk
-	Summary          string
-	Memory           ReviewMemory
-	DocumentSections []DocumentSection
-	ErrorMessage     string
-	CreatedAt        time.Time
-	CompletedAt      *time.Time
+	ID                 string
+	DocumentID         string
+	Mode               AnalysisMode
+	Status             AnalysisStatus
+	Provider           string
+	Model              string
+	ChunkCount         int
+	MergeBlocked       bool
+	BlockingFindings   int
+	SuppressedFindings int
+	Findings           []Finding
+	Chunks             []AnalysisChunk
+	Summary            string
+	Memory             ReviewMemory
+	DocumentSections   []DocumentSection
+	ErrorMessage       string
+	CreatedAt          time.Time
+	CompletedAt        *time.Time
 }
 
 type ReviewerRole string
@@ -56,14 +59,18 @@ const (
 )
 
 type Finding struct {
-	ChunkIndex  int
-	Role        string
-	Category    string
-	Severity    Severity
-	Problem     string
-	WhyItIsBad  string
-	HowToFix    string
-	SourceChunk string
+	ChunkIndex          int
+	Role                string
+	Category            string
+	Severity            Severity
+	Problem             string
+	WhyItIsBad          string
+	HowToFix            string
+	SourceChunk         string
+	SectionID           string
+	SectionTitle        string
+	RelatedSectionID    string
+	RelatedSectionTitle string
 }
 
 type AnalysisChunk struct {

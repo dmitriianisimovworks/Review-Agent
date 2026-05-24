@@ -34,11 +34,14 @@ type StartAnalysisRequest struct {
 }
 
 type AnalysisResponse struct {
-	ID         string           `json:"id"`
-	DocumentID string           `json:"document_id"`
-	Status     string           `json:"status"`
-	Summary    string           `json:"summary"`
-	Findings   []FindingPayload `json:"findings"`
+	ID                 string           `json:"id"`
+	DocumentID         string           `json:"document_id"`
+	Status             string           `json:"status"`
+	Summary            string           `json:"summary"`
+	MergeBlocked       bool             `json:"merge_blocked"`
+	BlockingFindings   int              `json:"blocking_findings"`
+	SuppressedFindings int              `json:"suppressed_findings"`
+	Findings           []FindingPayload `json:"findings"`
 }
 
 type PublishCommentsRequest struct {
@@ -54,12 +57,14 @@ type PublishCommentsResponse struct {
 }
 
 type FindingPayload struct {
-	Role       string `json:"role"`
-	Category   string `json:"category"`
-	Severity   string `json:"severity"`
-	Problem    string `json:"problem"`
-	WhyItIsBad string `json:"why_it_is_bad"`
-	HowToFix   string `json:"how_to_fix"`
+	Role                string `json:"role"`
+	Category            string `json:"category"`
+	Severity            string `json:"severity"`
+	Problem             string `json:"problem"`
+	WhyItIsBad          string `json:"why_it_is_bad"`
+	HowToFix            string `json:"how_to_fix"`
+	SectionTitle        string `json:"section_title,omitempty"`
+	RelatedSectionTitle string `json:"related_section_title,omitempty"`
 }
 
 func NewAnalysisHandler(analysisService AnalysisService) *AnalysisHandler {
@@ -132,21 +137,26 @@ func toAnalysisResponse(analysis domain.Analysis) AnalysisResponse {
 	findings := make([]FindingPayload, 0, len(analysis.Findings))
 	for _, finding := range analysis.Findings {
 		findings = append(findings, FindingPayload{
-			Role:       finding.Role,
-			Category:   finding.Category,
-			Severity:   string(finding.Severity),
-			Problem:    finding.Problem,
-			WhyItIsBad: finding.WhyItIsBad,
-			HowToFix:   finding.HowToFix,
+			Role:                finding.Role,
+			Category:            finding.Category,
+			Severity:            string(finding.Severity),
+			Problem:             finding.Problem,
+			WhyItIsBad:          finding.WhyItIsBad,
+			HowToFix:            finding.HowToFix,
+			SectionTitle:        finding.SectionTitle,
+			RelatedSectionTitle: finding.RelatedSectionTitle,
 		})
 	}
 
 	return AnalysisResponse{
-		ID:         analysis.ID,
-		DocumentID: analysis.DocumentID,
-		Status:     string(analysis.Status),
-		Summary:    analysis.Summary,
-		Findings:   findings,
+		ID:                 analysis.ID,
+		DocumentID:         analysis.DocumentID,
+		Status:             string(analysis.Status),
+		Summary:            analysis.Summary,
+		MergeBlocked:       analysis.MergeBlocked,
+		BlockingFindings:   analysis.BlockingFindings,
+		SuppressedFindings: analysis.SuppressedFindings,
+		Findings:           findings,
 	}
 }
 
