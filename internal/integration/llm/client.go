@@ -152,11 +152,15 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 	}
 
 	if completion.Error != nil {
-		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, "llm provider returned an error")
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, fmt.Sprintf("llm provider returned an error: %s", strings.TrimSpace(completion.Error.Message)))
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, fmt.Sprintf("llm provider returned status %d", resp.StatusCode))
+		message := fmt.Sprintf("llm provider returned status %d", resp.StatusCode)
+		if trimmed := strings.TrimSpace(string(respBody)); trimmed != "" {
+			message = fmt.Sprintf("%s: %s", message, safeErrorSnippet(trimmed, 280))
+		}
+		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, message)
 	}
 
 	if len(completion.Choices) == 0 {
@@ -241,6 +245,14 @@ func normalizeCategory(input string) string {
 	}
 
 	return strings.ReplaceAll(value, " ", "_")
+}
+
+func safeErrorSnippet(value string, maxRunes int) string {
+	runes := []rune(value)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:maxRunes])) + "..."
 }
 
 var _ Client = (*OpenAICompatibleClient)(nil)

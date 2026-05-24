@@ -106,7 +106,7 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 		roleDisplayName(role),
 		input.ChunkIndex+1,
 		maxInt(input.ChunkCount, 1),
-		formatMemorySection(input.Memory),
+		formatMemorySection(input.Memory, role),
 		input.ChunkText,
 	)
 
@@ -190,7 +190,7 @@ func roleInstructions(role domain.ReviewerRole) string {
 	}
 }
 
-func formatMemorySection(memory domain.ReviewMemory) string {
+func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) string {
 	if !memory.HasContext() {
 		return ""
 	}
@@ -200,29 +200,66 @@ func formatMemorySection(memory domain.ReviewMemory) string {
 		fmt.Sprintf("Предыдущих прогонов: %d", memory.PriorRunCount),
 	}
 
-	if len(memory.PriorSummaries) > 0 {
+	if summaries := limitStrings(memory.PriorSummaries, 2); len(summaries) > 0 {
 		parts = append(parts, "Краткие summary прошлых ревью:")
-		for idx, summary := range memory.PriorSummaries {
+		for idx, summary := range summaries {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, summary))
 		}
 	}
 
-	if len(memory.KnownFindings) > 0 {
+	if findings := roleRelevantFindings(memory.KnownFindings, role, 4); len(findings) > 0 {
 		parts = append(parts, "Уже обсуждённые замечания и риски:")
-		for idx, finding := range memory.KnownFindings {
+		for idx, finding := range findings {
 			parts = append(parts, fmt.Sprintf("%d. [%s][%s][%s] %s", idx+1, roleDisplayName(domain.ReviewerRole(finding.Role)), finding.Severity, finding.Category, finding.Problem))
 		}
 	}
 
-	if len(memory.ArchitecturalNotes) > 0 {
+	if notes := limitStrings(memory.ArchitecturalNotes, 2); len(notes) > 0 {
 		parts = append(parts, "Архитектурные заметки из прошлых ревью:")
-		for idx, note := range memory.ArchitecturalNotes {
+		for idx, note := range notes {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, note))
 		}
 	}
 
 	parts = append(parts, "Учитывай этот контекст как память документа и не повторяй дословно уже известные замечания без новой ценности.")
 	return strings.Join(parts, "\n") + "\n"
+}
+
+func roleRelevantFindings(findings []domain.Finding, role domain.ReviewerRole, limit int) []domain.Finding {
+	if limit <= 0 {
+		return nil
+	}
+
+	selected := make([]domain.Finding, 0, limit)
+	for _, finding := range findings {
+		if strings.TrimSpace(finding.Role) == string(role) {
+			selected = append(selected, finding)
+			if len(selected) >= limit {
+				return selected
+			}
+		}
+	}
+
+	for _, finding := range findings {
+		if strings.TrimSpace(finding.Role) != string(role) {
+			selected = append(selected, finding)
+			if len(selected) >= limit {
+				return selected
+			}
+		}
+	}
+
+	return selected
+}
+
+func limitStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) == 0 {
+		return nil
+	}
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
 }
 
 var _ Builder = (*DefaultBuilder)(nil)
