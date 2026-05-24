@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -87,6 +88,7 @@ func (h *AnalysisHandler) Start(w http.ResponseWriter, r *http.Request) {
 		Mode:         domain.AnalysisMode(req.Mode),
 	})
 	if err != nil {
+		log.Printf("analysis start: source=%q mode=%q google_doc=%t context_key=%q err=%v", req.Source, req.Mode, req.GoogleDocURL != "", req.ContextKey, err)
 		writeError(w, err)
 		return
 	}
@@ -99,6 +101,7 @@ func (h *AnalysisHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	analysis, err := h.analysisService.GetAnalysis(r.Context(), analysisID)
 	if err != nil {
+		log.Printf("analysis get: analysis_id=%q err=%v", analysisID, err)
 		writeError(w, err)
 		return
 	}
@@ -120,6 +123,7 @@ func (h *AnalysisHandler) PublishComments(w http.ResponseWriter, r *http.Request
 		Mode:       serviceCommentMode(req.Mode),
 	})
 	if err != nil {
+		log.Printf("analysis publish-comments: analysis_id=%q mode=%q err=%v", analysisID, req.Mode, err)
 		writeError(w, err)
 		return
 	}
