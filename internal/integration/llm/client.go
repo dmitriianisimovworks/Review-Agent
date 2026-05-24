@@ -95,6 +95,8 @@ type findingPayload struct {
 	HowToFix   string `json:"how_to_fix"`
 }
 
+const maxStructuredOutputAttempts = 2
+
 func NewOpenAICompatibleClient(cfg config.LLMConfig, promptBuilder prompt.Builder) *OpenAICompatibleClient {
 	return &OpenAICompatibleClient{
 		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
@@ -156,67 +158,24 @@ func (c *OpenAICompatibleClient) executePrompt(
 	section domain.DocumentSection,
 	relatedSection *domain.DocumentSection,
 ) (ChunkAnalysisResult, error) {
-	payload := chatCompletionRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{Role: "system", Content: builtPrompt.System},
-			{Role: "user", Content: builtPrompt.User},
-		},
-		Temperature: 0.1,
-		ResponseFormat: map[string]string{
-			"type": "json_object",
-		},
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindInternal, "failed to build llm request", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindInternal, "failed to build llm request", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to reach llm provider", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to read llm response", err)
-	}
-
-	var completion chatCompletionResponse
-	if err := json.Unmarshal(respBody, &completion); err != nil {
-		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to decode llm response", err)
-	}
-
-	if completion.Error != nil {
-		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, fmt.Sprintf("llm provider returned an error: %s", strings.TrimSpace(completion.Error.Message)))
-	}
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		message := fmt.Sprintf("llm provider returned status %d", resp.StatusCode)
-		if trimmed := strings.TrimSpace(string(respBody)); trimmed != "" {
-			message = fmt.Sprintf("%s: %s", message, safeErrorSnippet(trimmed, 280))
+	var (
+		content string
+		parsed  chunkAnalysisResponse
+		err     error
+	)
+	for attempt := 1; attempt <= maxStructuredOutputAttempts; attempt++ {
+		content, err = c.requestLLMContent(ctx, builtPrompt)
+		if err != nil {
+			return ChunkAnalysisResult{}, err
 		}
-		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, message)
-	}
 
-	if len(completion.Choices) == 0 {
-		return ChunkAnalysisResult{}, apperrors.New(apperrors.KindDependency, "llm returned no choices")
-	}
-
-	content := completion.Choices[0].Message.Content
-	parsed, err := parseChunkAnalysis(content)
-	if err != nil {
-		return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "llm returned invalid structured output", err)
+		parsed, err = parseChunkAnalysis(content)
+		if err == nil {
+			break
+		}
+		if attempt == maxStructuredOutputAttempts {
+			return ChunkAnalysisResult{}, apperrors.Wrap(apperrors.KindDependency, "llm returned invalid structured output", err)
+		}
 	}
 
 	findings := make([]domain.Finding, 0, len(parsed.Findings))
@@ -249,6 +208,67 @@ func (c *OpenAICompatibleClient) executePrompt(
 	}, nil
 }
 
+func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPrompt prompt.BuiltPrompt) (string, error) {
+	payload := chatCompletionRequest{
+		Model: c.model,
+		Messages: []chatMessage{
+			{Role: "system", Content: builtPrompt.System},
+			{Role: "user", Content: builtPrompt.User},
+		},
+		Temperature: 0.1,
+		ResponseFormat: map[string]string{
+			"type": "json_object",
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", apperrors.Wrap(apperrors.KindInternal, "failed to build llm request", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", apperrors.Wrap(apperrors.KindInternal, "failed to build llm request", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", apperrors.Wrap(apperrors.KindDependency, "failed to reach llm provider", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", apperrors.Wrap(apperrors.KindDependency, "failed to read llm response", err)
+	}
+
+	var completion chatCompletionResponse
+	if err := json.Unmarshal(respBody, &completion); err != nil {
+		return "", apperrors.Wrap(apperrors.KindDependency, "failed to decode llm response", err)
+	}
+
+	if completion.Error != nil {
+		return "", apperrors.New(apperrors.KindDependency, fmt.Sprintf("llm provider returned an error: %s", strings.TrimSpace(completion.Error.Message)))
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		message := fmt.Sprintf("llm provider returned status %d", resp.StatusCode)
+		if trimmed := strings.TrimSpace(string(respBody)); trimmed != "" {
+			message = fmt.Sprintf("%s: %s", message, safeErrorSnippet(trimmed, 280))
+		}
+		return "", apperrors.New(apperrors.KindDependency, message)
+	}
+
+	if len(completion.Choices) == 0 {
+		return "", apperrors.New(apperrors.KindDependency, "llm returned no choices")
+	}
+
+	return completion.Choices[0].Message.Content, nil
+}
+
 func promptVersion(chunkIndex int, crossSection bool) string {
 	if crossSection {
 		return "v4-cross-section"
@@ -266,17 +286,58 @@ func parseChunkAnalysis(content string) (chunkAnalysisResponse, error) {
 		return parsed, nil
 	}
 
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
-	if start == -1 || end == -1 || end <= start {
+	candidate, ok := extractFirstJSONObject(content)
+	if !ok {
 		return chunkAnalysisResponse{}, errors.New("llm response does not contain json object")
 	}
 
-	if err := json.Unmarshal([]byte(content[start:end+1]), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
 		return chunkAnalysisResponse{}, fmt.Errorf("decode structured llm output: %w", err)
 	}
 
 	return parsed, nil
+}
+
+func extractFirstJSONObject(content string) (string, bool) {
+	start := strings.Index(content, "{")
+	if start == -1 {
+		return "", false
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for idx := start; idx < len(content); idx++ {
+		ch := content[idx]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return content[start : idx+1], true
+			}
+		}
+	}
+
+	return "", false
 }
 
 func normalizeSeverity(input string) domain.Severity {
