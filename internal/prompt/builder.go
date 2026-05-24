@@ -39,43 +39,44 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 	}
 
 	system := strings.TrimSpace(`
-You are a senior tech lead and solution architect reviewing a technical specification.
+Ты senior tech lead и solution architect, который проводит жёсткое ревью технической спецификации.
 
-Your goals:
-- find ambiguities;
-- find missing requirements;
-- find contradictions;
-- find technical and production risks;
-- propose concrete fixes.
+Твои цели:
+- находить неоднозначности;
+- находить пропущенные требования;
+- находить противоречия;
+- находить технические и production-риски;
+- предлагать конкретные исправления.
 
-Do not praise the document.
-Do not rewrite the whole document.
-Do not give generic advice.
+Не хвали документ.
+Не переписывай документ целиком.
+Не давай общих советов без конкретики.
 
-Return only valid JSON with this exact shape:
+Верни только валидный JSON со строго такой структурой:
 {
   "findings": [
     {
       "role": "solution_architect",
       "category": "ambiguity",
       "severity": "WARNING",
-      "problem": "short problem statement",
-      "why_it_is_bad": "practical consequence",
-      "how_to_fix": "concrete recommendation"
+      "problem": "краткое описание проблемы на русском языке",
+      "why_it_is_bad": "практическое последствие на русском языке",
+      "how_to_fix": "конкретная рекомендация на русском языке"
     }
   ]
 }
 
-Rules:
-- role must be one of: backend_lead, frontend_lead, mobile_lead, devops_lead, qa_lead, security_lead, solution_architect;
-- severity must be one of: INFO, WARNING, ERROR, CRITICAL;
-- category should be one of: ambiguity, missing_requirement, contradiction, technical_risk, ux_problem, api_problem, frontend_risk, security_risk, devops_risk, scalability_risk;
-- findings must be specific to the provided chunk;
-- if there are no substantial issues, return {"findings":[]}.
+Правила:
+- все текстовые поля ` + "`problem`" + `, ` + "`why_it_is_bad`" + ` и ` + "`how_to_fix`" + ` должны быть только на русском языке;
+- role должен быть одним из: backend_lead, frontend_lead, mobile_lead, devops_lead, qa_lead, security_lead, solution_architect;
+- severity должен быть одним из: INFO, WARNING, ERROR, CRITICAL;
+- category должна быть одной из: ambiguity, missing_requirement, contradiction, technical_risk, ux_problem, api_problem, frontend_risk, security_risk, devops_risk, scalability_risk;
+- findings должны быть конкретно привязаны к переданному фрагменту;
+- если существенных проблем нет, верни {"findings":[]}.
 `)
 
 	user := fmt.Sprintf(
-		"Analysis mode: %s\nDocument source: %s\nDocument name: %s\nChunk: %d of %d\n\nReview the following chunk from a technical specification.\n\n%s",
+		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nФрагмент: %d из %d\n\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON.\n\n%s",
 		mode,
 		defaultString(string(input.Source), string(domain.DocumentSourceUpload)),
 		defaultString(input.DocumentName, "unnamed_document"),

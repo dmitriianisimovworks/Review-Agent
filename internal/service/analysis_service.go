@@ -197,7 +197,7 @@ func (s *AnalysisService) GetAnalysis(ctx context.Context, id string) (domain.An
 
 func buildSummary(findings []domain.Finding, chunkCount int) string {
 	if len(findings) == 0 {
-		return fmt.Sprintf("Review completed across %d chunks. No substantial issues were detected.", chunkCount)
+		return fmt.Sprintf("Анализ завершён. Обработано фрагментов: %d. Существенных проблем не обнаружено.", chunkCount)
 	}
 
 	severityCounts := map[domain.Severity]int{}
@@ -224,7 +224,7 @@ func buildSummary(findings []domain.Finding, chunkCount int) string {
 	}
 
 	return fmt.Sprintf(
-		"Review completed across %d chunks. Findings: %d total, %d critical, %d errors, %d warnings. Main categories: %s.",
+		"Анализ завершён. Обработано фрагментов: %d. Найдено замечаний: %d, из них критичных: %d, ошибок: %d, предупреждений: %d. Основные категории: %s.",
 		chunkCount,
 		len(findings),
 		severityCounts[domain.SeverityCritical],
