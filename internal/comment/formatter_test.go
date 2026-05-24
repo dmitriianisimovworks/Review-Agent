@@ -44,4 +44,32 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	if !strings.Contains(summary.Content, "Итоговый комментарий") {
 		t.Fatalf("summary draft missing title: %q", summary.Content)
 	}
+	if summary.AnchorLine == nil || *summary.AnchorLine < *inline.AnchorLine {
+		t.Fatalf("expected summary anchor to be at end of document")
+	}
+}
+
+func TestSelectInlineFindingsFiltersSeverityAndLimitsWarnings(t *testing.T) {
+	t.Parallel()
+
+	findings := []domain.Finding{
+		{Severity: domain.SeverityInfo, Problem: "info"},
+		{Severity: domain.SeverityWarning, Problem: "w1"},
+		{Severity: domain.SeverityWarning, Problem: "w2"},
+		{Severity: domain.SeverityWarning, Problem: "w3"},
+		{Severity: domain.SeverityWarning, Problem: "w4"},
+		{Severity: domain.SeverityError, Problem: "e1"},
+		{Severity: domain.SeverityCritical, Problem: "c1"},
+	}
+
+	selected := selectInlineFindings(findings)
+	if len(selected) != 5 {
+		t.Fatalf("expected 5 selected findings, got %d", len(selected))
+	}
+
+	for _, finding := range selected {
+		if finding.Severity == domain.SeverityInfo {
+			t.Fatalf("info finding should not be selected for inline comments")
+		}
+	}
 }

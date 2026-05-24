@@ -34,21 +34,28 @@ func NewDefaultFormatter() *DefaultFormatter {
 	return &DefaultFormatter{}
 }
 
+const (
+	maxInlineWarningComments = 3
+	maxTotalInlineComments   = 7
+	maxSummaryFindings       = 8
+)
+
 func (f *DefaultFormatter) Format(document domain.Document, analysis domain.Analysis, mode PublishMode) []Draft {
 	switch mode {
 	case PublishModeInline:
-		return buildInlineDrafts(document, analysis)
+		return buildInlineDrafts(document, selectInlineFindings(analysis.Findings))
 	case PublishModeSummary:
-		return buildSummaryDrafts(analysis)
+		return buildSummaryDrafts(document, analysis, selectInlineFindings(analysis.Findings))
 	default:
-		drafts := buildInlineDrafts(document, analysis)
-		return append(drafts, buildSummaryDrafts(analysis)...)
+		inlineFindings := selectInlineFindings(analysis.Findings)
+		drafts := buildInlineDrafts(document, inlineFindings)
+		return append(drafts, buildSummaryDrafts(document, analysis, inlineFindings)...)
 	}
 }
 
-func buildInlineDrafts(document domain.Document, analysis domain.Analysis) []Draft {
-	drafts := make([]Draft, 0, len(analysis.Findings))
-	for _, finding := range analysis.Findings {
+func buildInlineDrafts(document domain.Document, findings []domain.Finding) []Draft {
+	drafts := make([]Draft, 0, len(findings))
+	for _, finding := range findings {
 		draft := Draft{
 			Type:          "inline",
 			Content:       formatFinding(finding),
@@ -62,11 +69,14 @@ func buildInlineDrafts(document domain.Document, analysis domain.Analysis) []Dra
 	return drafts
 }
 
-func buildSummaryDrafts(analysis domain.Analysis) []Draft {
+func buildSummaryDrafts(document domain.Document, analysis domain.Analysis, publishedInline []domain.Finding) []Draft {
+	endLine := endAnchorLine(document.NormalizedContent)
+
 	if len(analysis.Findings) == 0 {
 		return []Draft{{
-			Type:    "summary",
-			Content: "Итоговый комментарий\n\nСущественных замечаний по документу не обнаружено.",
+			Type:       "summary",
+			Content:    "Итоговый комментарий\n\nСущественных замечаний по документу не обнаружено.",
+			AnchorLine: &endLine,
 		}}
 	}
 
@@ -80,21 +90,41 @@ func buildSummaryDrafts(analysis domain.Analysis) []Draft {
 		return left > right
 	})
 
-	limit := min(len(findings), 5)
+	inlineKeys := make(map[string]struct{}, len(publishedInline))
+	for _, finding := range publishedInline {
+		inlineKeys[findingKey(finding)] = struct{}{}
+	}
+
+	remaining := make([]domain.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if _, exists := inlineKeys[findingKey(finding)]; exists {
+			continue
+		}
+		remaining = append(remaining, finding)
+	}
+
 	lines := []string{
 		"Итоговый комментарий",
 		"",
 		analysis.Summary,
-		"",
-		"Ключевые замечания:",
 	}
-	for i := 0; i < limit; i++ {
-		lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, findings[i].Severity, strings.TrimSpace(findings[i].Problem)))
+
+	if len(remaining) > 0 {
+		lines = append(lines, "", "Дополнительные замечания:")
+		limit := min(len(remaining), maxSummaryFindings)
+		for i := 0; i < limit; i++ {
+			lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, remaining[i].Severity, strings.TrimSpace(remaining[i].Problem)))
+		}
+		if len(remaining) > limit {
+			lines = append(lines, fmt.Sprintf("... и ещё %d замечаний в полном результате анализа.", len(remaining)-limit))
+		}
 	}
 
 	return []Draft{{
-		Type:    "summary",
-		Content: strings.Join(lines, "\n"),
+		Type:          "summary",
+		Content:       strings.Join(lines, "\n"),
+		AnchorLine:    &endLine,
+		QuotedContent: quoteLastMeaningfulLine(document.NormalizedContent),
 	}}
 }
 
@@ -148,6 +178,21 @@ func quoteForComment(sourceChunk string) string {
 	return ""
 }
 
+func quoteLastMeaningfulLine(documentText string) string {
+	lines := strings.Split(strings.TrimSpace(documentText), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > 220 {
+			return trimmed[:220]
+		}
+		return trimmed
+	}
+	return ""
+}
+
 func severityRank(severity domain.Severity) int {
 	switch severity {
 	case domain.SeverityCritical:
@@ -166,6 +211,64 @@ func min(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func endAnchorLine(documentText string) int {
+	text := strings.TrimSpace(documentText)
+	if text == "" {
+		return 1
+	}
+
+	line := 1
+	for _, char := range text {
+		if char == '\n' {
+			line++
+		}
+	}
+	return line
+}
+
+func selectInlineFindings(findings []domain.Finding) []domain.Finding {
+	scored := append([]domain.Finding(nil), findings...)
+	sort.SliceStable(scored, func(i, j int) bool {
+		left := severityRank(scored[i].Severity)
+		right := severityRank(scored[j].Severity)
+		if left == right {
+			return scored[i].Category < scored[j].Category
+		}
+		return left > right
+	})
+
+	selected := make([]domain.Finding, 0, min(len(scored), maxTotalInlineComments))
+	warningCount := 0
+	for _, finding := range scored {
+		switch finding.Severity {
+		case domain.SeverityCritical, domain.SeverityError:
+			selected = append(selected, finding)
+		case domain.SeverityWarning:
+			if warningCount >= maxInlineWarningComments {
+				continue
+			}
+			selected = append(selected, finding)
+			warningCount++
+		default:
+			continue
+		}
+
+		if len(selected) >= maxTotalInlineComments {
+			break
+		}
+	}
+
+	return selected
+}
+
+func findingKey(finding domain.Finding) string {
+	return strings.Join([]string{
+		string(finding.Severity),
+		finding.Category,
+		strings.TrimSpace(finding.Problem),
+	}, "|")
 }
 
 func MarshalAnchor(line int) string {
