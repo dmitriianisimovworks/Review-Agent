@@ -14,10 +14,15 @@ import (
 )
 
 const inboxProcessingComment = "Принял документ на проверку. Приступаю к анализу."
+const inboxProgressComment = "Анализ продолжается. Формирую итоговые замечания и summary."
+
+const inboxProgressCommentDelay = 20 * time.Second
 
 type inboxPendingAnalysis struct {
-	documentExternalID string
-	startedAt          time.Time
+	documentExternalID  string
+	startedAt           time.Time
+	progressCommentSent bool
+	serviceCommentIDs   []string
 }
 
 type GoogleInboxService struct {
@@ -109,7 +114,8 @@ func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context) error {
 			continue
 		}
 
-		if err := s.publishProcessingComment(ctx, file.ID); err != nil {
+		serviceCommentIDs, err := s.publishServiceComment(ctx, file.ID, inboxProcessingComment)
+		if err != nil {
 			log.Printf("google inbox: document_id=%q publish processing comment: %v", file.ID, err)
 		}
 
@@ -123,7 +129,7 @@ func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context) error {
 			return fmt.Errorf("start inbox analysis for %s: %w", file.ID, err)
 		}
 
-		s.addPending(analysis.ID, file.ID)
+		s.addPending(analysis.ID, file.ID, serviceCommentIDs)
 		log.Printf("google inbox: queued analysis_id=%q document_id=%q", analysis.ID, file.ID)
 	}
 
@@ -146,20 +152,49 @@ func (s *GoogleInboxService) processPending(ctx context.Context) {
 				log.Printf("google inbox: analysis_id=%q auto publish failed: %v", analysisID, err)
 				continue
 			}
+			if err := s.deleteServiceComments(ctx, pending.documentExternalID, pending.serviceCommentIDs); err != nil {
+				log.Printf("google inbox: analysis_id=%q cleanup service comments failed: %v", analysisID, err)
+			}
 			log.Printf("google inbox: auto published analysis_id=%q document_id=%q", analysisID, pending.documentExternalID)
 			s.removePending(analysisID)
 		case domain.AnalysisStatusFailed:
 			log.Printf("google inbox: analysis_id=%q failed", analysisID)
 			s.removePending(analysisID)
+		default:
+			if !pending.progressCommentSent && time.Since(pending.startedAt) >= inboxProgressCommentDelay {
+				commentIDs, err := s.publishServiceComment(ctx, pending.documentExternalID, inboxProgressComment)
+				if err != nil {
+					log.Printf("google inbox: analysis_id=%q publish progress comment: %v", analysisID, err)
+					continue
+				}
+				s.markProgressCommentSent(analysisID, commentIDs)
+			}
 		}
 	}
 }
 
-func (s *GoogleInboxService) publishProcessingComment(ctx context.Context, documentExternalID string) error {
-	return s.commentPublisher.Publish(ctx, documentExternalID, []google.CommentDraft{{
+func (s *GoogleInboxService) publishServiceComment(ctx context.Context, documentExternalID, content string) ([]string, error) {
+	published, err := s.commentPublisher.Publish(ctx, documentExternalID, []google.CommentDraft{{
 		Type:    "summary",
-		Content: inboxProcessingComment,
+		Content: content,
 	}})
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(published))
+	for _, comment := range published {
+		if comment.ID != "" {
+			ids = append(ids, comment.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (s *GoogleInboxService) deleteServiceComments(ctx context.Context, documentExternalID string, commentIDs []string) error {
+	if len(commentIDs) == 0 {
+		return nil
+	}
+	return s.commentPublisher.Delete(ctx, documentExternalID, commentIDs)
 }
 
 func (s *GoogleInboxService) isPendingDocument(documentExternalID string) bool {
@@ -173,13 +208,27 @@ func (s *GoogleInboxService) isPendingDocument(documentExternalID string) bool {
 	return false
 }
 
-func (s *GoogleInboxService) addPending(analysisID, documentExternalID string) {
+func (s *GoogleInboxService) addPending(analysisID, documentExternalID string, serviceCommentIDs []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending[analysisID] = inboxPendingAnalysis{
-		documentExternalID: documentExternalID,
-		startedAt:          time.Now().UTC(),
+		documentExternalID:  documentExternalID,
+		startedAt:           time.Now().UTC(),
+		serviceCommentIDs:   append([]string(nil), serviceCommentIDs...),
+		progressCommentSent: false,
 	}
+}
+
+func (s *GoogleInboxService) markProgressCommentSent(analysisID string, commentIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.pending[analysisID]
+	if !ok {
+		return
+	}
+	pending.progressCommentSent = true
+	pending.serviceCommentIDs = append(pending.serviceCommentIDs, commentIDs...)
+	s.pending[analysisID] = pending
 }
 
 func (s *GoogleInboxService) removePending(analysisID string) {

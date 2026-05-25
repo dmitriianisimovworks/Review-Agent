@@ -44,8 +44,14 @@ type CommentDraft struct {
 	Type          string
 }
 
+type PublishedComment struct {
+	ID   string
+	Type string
+}
+
 type CommentPublisher interface {
-	Publish(ctx context.Context, documentExternalID string, comments []CommentDraft) error
+	Publish(ctx context.Context, documentExternalID string, comments []CommentDraft) ([]PublishedComment, error)
+	Delete(ctx context.Context, documentExternalID string, commentIDs []string) error
 }
 
 type NoopDocumentReader struct{}
@@ -64,6 +70,10 @@ func NewNoopCommentPublisher() *NoopCommentPublisher {
 	return &NoopCommentPublisher{}
 }
 
-func (p *NoopCommentPublisher) Publish(_ context.Context, _ string, _ []CommentDraft) error {
+func (p *NoopCommentPublisher) Publish(_ context.Context, _ string, _ []CommentDraft) ([]PublishedComment, error) {
+	return nil, nil
+}
+
+func (p *NoopCommentPublisher) Delete(_ context.Context, _ string, _ []string) error {
 	return nil
 }

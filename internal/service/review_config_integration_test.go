@@ -148,13 +148,32 @@ func (f *recordingFormatter) Format(_ domain.Document, _ domain.Analysis, mode c
 }
 
 type stubCommentPublisher struct {
-	documentID string
-	drafts     []google.CommentDraft
+	documentID        string
+	drafts            []google.CommentDraft
+	publishedBatches  [][]google.CommentDraft
+	publishIDs        []string
+	deletedDocumentID string
+	deletedCommentIDs []string
 }
 
-func (p *stubCommentPublisher) Publish(_ context.Context, documentExternalID string, drafts []google.CommentDraft) error {
+func (p *stubCommentPublisher) Publish(_ context.Context, documentExternalID string, drafts []google.CommentDraft) ([]google.PublishedComment, error) {
 	p.documentID = documentExternalID
 	p.drafts = drafts
+	p.publishedBatches = append(p.publishedBatches, append([]google.CommentDraft(nil), drafts...))
+	published := make([]google.PublishedComment, 0, len(drafts))
+	for idx, draft := range drafts {
+		id := ""
+		if idx < len(p.publishIDs) {
+			id = p.publishIDs[idx]
+		}
+		published = append(published, google.PublishedComment{ID: id, Type: draft.Type})
+	}
+	return published, nil
+}
+
+func (p *stubCommentPublisher) Delete(_ context.Context, documentExternalID string, commentIDs []string) error {
+	p.deletedDocumentID = documentExternalID
+	p.deletedCommentIDs = append([]string(nil), commentIDs...)
 	return nil
 }
 

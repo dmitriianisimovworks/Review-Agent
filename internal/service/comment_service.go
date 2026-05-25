@@ -88,7 +88,7 @@ func (s *CommentService) PublishComments(ctx context.Context, input PublishComme
 		})
 	}
 
-	if err := s.commentPublisher.Publish(ctx, document.ExternalID, payload); err != nil {
+	if _, err := s.commentPublisher.Publish(ctx, document.ExternalID, payload); err != nil {
 		return PublishCommentsResult{}, apperrors.Wrap(apperrors.KindDependency, "failed to publish comments to google docs", err)
 	}
 
