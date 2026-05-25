@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"technical-specification-review-agent/internal/config"
 )
 
@@ -55,7 +57,7 @@ func (s *QdrantStore) Upsert(ctx context.Context, points []Point) error {
 	bodyPoints := make([]map[string]any, 0, len(points))
 	for _, point := range points {
 		bodyPoints = append(bodyPoints, map[string]any{
-			"id":      point.ID,
+			"id":      stablePointUUID(point.ID),
 			"vector":  point.Vector,
 			"payload": point.Payload,
 		})
@@ -128,4 +130,12 @@ func (s *QdrantStore) doJSON(ctx context.Context, method, path string, body []by
 
 func (s *QdrantStore) collectionPath() string {
 	return "/collections/" + s.collection
+}
+
+func stablePointUUID(id string) string {
+	normalized := strings.TrimSpace(id)
+	if normalized == "" {
+		normalized = "empty-point-id"
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(normalized)).String()
 }
