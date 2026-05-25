@@ -31,6 +31,8 @@ type Analysis struct {
 	MergeBlocked       bool
 	BlockingFindings   int
 	SuppressedFindings int
+	TargetSectionID    string
+	TargetSectionTitle string
 	Findings           []Finding
 	Chunks             []AnalysisChunk
 	Summary            string
@@ -48,8 +50,10 @@ const (
 	ReviewerRoleSolutionArchitect      ReviewerRole = "solution_architect"
 	ReviewerRoleSeniorBackendEngineer  ReviewerRole = "senior_backend_engineer"
 	ReviewerRoleSeniorFrontendEngineer ReviewerRole = "senior_frontend_engineer"
+	ReviewerRoleMobileLead             ReviewerRole = "mobile_lead"
 	ReviewerRoleDevOpsReviewer         ReviewerRole = "devops_reviewer"
 	ReviewerRoleQAReviewer             ReviewerRole = "qa_reviewer"
+	ReviewerRoleSecurityLead           ReviewerRole = "security_lead"
 )
 
 type AnalysisMode string
@@ -97,7 +101,9 @@ func DefaultReviewerRoles() []ReviewerRole {
 		ReviewerRoleSolutionArchitect,
 		ReviewerRoleSeniorBackendEngineer,
 		ReviewerRoleSeniorFrontendEngineer,
+		ReviewerRoleMobileLead,
 		ReviewerRoleDevOpsReviewer,
 		ReviewerRoleQAReviewer,
+		ReviewerRoleSecurityLead,
 	}
 }

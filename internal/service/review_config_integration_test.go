@@ -452,3 +452,67 @@ func TestAnalysisServicePersistsHistoryAwareMemorySnapshot(t *testing.T) {
 		t.Fatalf("expected persisted memory snapshot to include history")
 	}
 }
+
+func TestAnalysisServiceIncrementalReviewTargetsSingleSection(t *testing.T) {
+	documentRepo := &stubDocumentRepo{}
+	analysisRepo := &stubAnalysisRepo{}
+	llmClient := &recordingLLMClient{}
+	reader := &stubDocumentReader{
+		document: google.Document{
+			Title:      "spec",
+			ExternalID: "doc-1",
+			Content:    "ignored",
+			Sections: []google.Section{
+				{ID: "scope", Title: "Scope", Level: 1, Content: "Описание области."},
+				{ID: "sla", Title: "SLA", Level: 1, Content: "Описание SLA и дедлайнов."},
+			},
+		},
+	}
+
+	service := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		llmClient,
+		reader,
+		nil,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{
+			settings: reviewconfig.Settings{
+				Roles:           []domain.ReviewerRole{domain.ReviewerRoleTechLead},
+				InlineComments:  true,
+				SummaryComments: true,
+				MemoryEnabled:   true,
+				ChunkSize:       5000,
+				MaxChunks:       10,
+			},
+		},
+		nil,
+	)
+
+	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
+		Source:             domain.DocumentSourceGoogleDocs,
+		GoogleDocURL:       "https://docs.google.com/document/d/doc-1/edit",
+		Mode:               domain.AnalysisModeIncrementalReview,
+		TargetSectionID:    "sla",
+		TargetSectionTitle: "SLA",
+	})
+	if err != nil {
+		t.Fatalf("StartAnalysis() error = %v", err)
+	}
+
+	if analysis.TargetSectionID != "sla" {
+		t.Fatalf("expected target section id to be preserved, got %q", analysis.TargetSectionID)
+	}
+	if analysis.ChunkCount != 1 {
+		t.Fatalf("expected only one targeted chunk, got %d", analysis.ChunkCount)
+	}
+	if len(llmClient.inputs) != 1 {
+		t.Fatalf("expected one llm call for targeted section, got %d", len(llmClient.inputs))
+	}
+	if llmClient.inputs[0].SectionTitle != "SLA" {
+		t.Fatalf("expected targeted section title SLA, got %q", llmClient.inputs[0].SectionTitle)
+	}
+}

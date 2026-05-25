@@ -475,10 +475,14 @@ func roleLabel(role string) string {
 		return "Senior Backend Engineer"
 	case string(domain.ReviewerRoleSeniorFrontendEngineer):
 		return "Senior Frontend Engineer"
+	case string(domain.ReviewerRoleMobileLead):
+		return "Mobile Lead"
 	case string(domain.ReviewerRoleDevOpsReviewer):
 		return "DevOps Reviewer"
 	case string(domain.ReviewerRoleQAReviewer):
 		return "QA Reviewer"
+	case string(domain.ReviewerRoleSecurityLead):
+		return "Security Lead"
 	default:
 		return "Reviewer"
 	}
@@ -494,10 +498,14 @@ func roleEmoji(role string) string {
 		return "🧱"
 	case string(domain.ReviewerRoleSeniorFrontendEngineer):
 		return "🖥"
+	case string(domain.ReviewerRoleMobileLead):
+		return "📱"
 	case string(domain.ReviewerRoleDevOpsReviewer):
 		return "⚙️"
 	case string(domain.ReviewerRoleQAReviewer):
 		return "🧪"
+	case string(domain.ReviewerRoleSecurityLead):
+		return "🔐"
 	default:
 		return "📌"
 	}

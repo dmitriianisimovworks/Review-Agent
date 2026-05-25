@@ -91,7 +91,7 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 
 Правила:
 - все текстовые поля `+"`problem`"+`, `+"`why_it_is_bad`"+` и `+"`how_to_fix`"+` должны быть только на русском языке;
-- role должен быть одним из: tech_lead, solution_architect, senior_backend_engineer, senior_frontend_engineer, devops_reviewer, qa_reviewer;
+- role должен быть одним из: tech_lead, solution_architect, senior_backend_engineer, senior_frontend_engineer, mobile_lead, devops_reviewer, qa_reviewer, security_lead;
 - severity должен быть одним из: INFO, WARNING, ERROR, CRITICAL;
 - category должна быть одной из: ambiguity, missing_requirement, contradiction, technical_risk, ux_problem, api_problem, frontend_risk, security_risk, devops_risk, scalability_risk;
 - findings должны быть конкретно привязаны к переданному фрагменту;
@@ -145,10 +145,14 @@ func roleDisplayName(role domain.ReviewerRole) string {
 		return "Senior Backend Engineer"
 	case domain.ReviewerRoleSeniorFrontendEngineer:
 		return "Senior Frontend Engineer"
+	case domain.ReviewerRoleMobileLead:
+		return "Mobile Lead"
 	case domain.ReviewerRoleDevOpsReviewer:
 		return "DevOps Reviewer"
 	case domain.ReviewerRoleQAReviewer:
 		return "QA Reviewer"
+	case domain.ReviewerRoleSecurityLead:
+		return "Security Lead"
 	default:
 		return "Solution Architect"
 	}
@@ -178,6 +182,11 @@ func roleInstructions(role domain.ReviewerRole) string {
 - смотри на UX flows, empty/loading/error states и роли в интерфейсе;
 - ищи неполные пользовательские сценарии, невозможные состояния и frontend-риски;
 - отмечай проблемы пагинации, кеширования, синхронизации состояния и responsiveness.`)
+	case domain.ReviewerRoleMobileLead:
+		return strings.TrimSpace(`
+- смотри на mobile-specific сценарии: offline mode, unstable network, battery-sensitive flows и background behavior;
+- ищи проблемы синхронизации состояния, загрузки больших списков, пагинации и кеширования на мобильных клиентах;
+- отмечай риски слабой адаптации UX под мобильные ограничения и недостающие mobile edge cases.`)
 	case domain.ReviewerRoleDevOpsReviewer:
 		return strings.TrimSpace(`
 - смотри на deployment, observability, backup/recovery и эксплуатационные риски;
@@ -188,6 +197,11 @@ func roleInstructions(role domain.ReviewerRole) string {
 - смотри на тестируемость, acceptance criteria, edge cases и error flows;
 - ищи сценарии, которые невозможно однозначно проверить;
 - отмечай gaps в негативных кейсах, правах доступа, конкурентных сценариях и регрессиях.`)
+	case domain.ReviewerRoleSecurityLead:
+		return strings.TrimSpace(`
+- смотри на auth, permissions, data exposure, file uploads и security boundaries;
+- ищи insecure flows, недостаточную валидацию, утечки секретов и missing security requirements;
+- отмечай production-риски вокруг доступа, инъекций, хранения чувствительных данных и abuse scenarios.`)
 	default:
 		return ""
 	}
@@ -203,24 +217,45 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		fmt.Sprintf("Предыдущих прогонов: %d", memory.PriorRunCount),
 	}
 
-	if summaries := limitStrings(memory.PriorSummaries, 2); len(summaries) > 0 {
+	if summaries := limitStrings(memory.PriorSummaries, 1); len(summaries) > 0 {
 		parts = append(parts, "Краткие summary прошлых ревью:")
 		for idx, summary := range summaries {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, summary))
 		}
 	}
 
-	if findings := roleRelevantFindings(memory.KnownFindings, role, 4); len(findings) > 0 {
+	if findings := roleRelevantFindings(memory.KnownFindings, role, 2); len(findings) > 0 {
 		parts = append(parts, "Уже обсуждённые замечания и риски:")
 		for idx, finding := range findings {
 			parts = append(parts, fmt.Sprintf("%d. [%s][%s][%s] %s", idx+1, roleDisplayName(domain.ReviewerRole(finding.Role)), finding.Severity, finding.Category, finding.Problem))
 		}
 	}
 
-	if notes := limitStrings(memory.ArchitecturalNotes, 2); len(notes) > 0 {
+	if notes := limitStrings(memory.ArchitecturalNotes, 1); len(notes) > 0 {
 		parts = append(parts, "Архитектурные заметки из прошлых ревью:")
 		for idx, note := range notes {
 			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, note))
+		}
+	}
+
+	if modules := limitStrings(memory.Modules, 2); len(modules) > 0 {
+		parts = append(parts, "Известные модули/разделы:")
+		for idx, module := range modules {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, module))
+		}
+	}
+
+	if roles := limitStrings(memory.UserRoles, 2); len(roles) > 0 {
+		parts = append(parts, "Известные роли пользователей:")
+		for idx, roleName := range roles {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, roleName))
+		}
+	}
+
+	if entities := limitStrings(memory.Entities, 2); len(entities) > 0 {
+		parts = append(parts, "Известные сущности/термины:")
+		for idx, entity := range entities {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, entity))
 		}
 	}
 

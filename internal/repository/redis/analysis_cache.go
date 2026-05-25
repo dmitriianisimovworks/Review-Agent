@@ -26,6 +26,8 @@ type cachedAnalysis struct {
 	MergeBlocked       bool                  `json:"merge_blocked"`
 	BlockingFindings   int                   `json:"blocking_findings"`
 	SuppressedFindings int                   `json:"suppressed_findings"`
+	TargetSectionID    string                `json:"target_section_id"`
+	TargetSectionTitle string                `json:"target_section_title"`
 	Findings           []domain.Finding      `json:"findings"`
 	Summary            string                `json:"summary"`
 	ErrorMessage       string                `json:"error_message"`
@@ -80,6 +82,8 @@ func toCachedAnalysis(analysis domain.Analysis) cachedAnalysis {
 		MergeBlocked:       analysis.MergeBlocked,
 		BlockingFindings:   analysis.BlockingFindings,
 		SuppressedFindings: analysis.SuppressedFindings,
+		TargetSectionID:    analysis.TargetSectionID,
+		TargetSectionTitle: analysis.TargetSectionTitle,
 		Findings:           analysis.Findings,
 		Summary:            analysis.Summary,
 		ErrorMessage:       analysis.ErrorMessage,
@@ -100,6 +104,8 @@ func (c cachedAnalysis) toDomain() domain.Analysis {
 		MergeBlocked:       c.MergeBlocked,
 		BlockingFindings:   c.BlockingFindings,
 		SuppressedFindings: c.SuppressedFindings,
+		TargetSectionID:    c.TargetSectionID,
+		TargetSectionTitle: c.TargetSectionTitle,
 		Findings:           c.Findings,
 		Summary:            c.Summary,
 		ErrorMessage:       c.ErrorMessage,

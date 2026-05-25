@@ -25,9 +25,9 @@ func NewAnalysisRepository(pool *pgxpool.Pool) *AnalysisRepository {
 func (r *AnalysisRepository) Create(ctx context.Context, analysis domain.Analysis) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO analysis_runs (
-			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, error_message, created_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt)
+			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, target_section_id, target_section_title, error_message, created_at, completed_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.TargetSectionID), nullString(analysis.TargetSectionTitle), nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt)
 	if err != nil {
 		return fmt.Errorf("insert analysis run: %w", err)
 	}
@@ -70,10 +70,12 @@ func (r *AnalysisRepository) Complete(ctx context.Context, analysis domain.Analy
 		    merge_blocked = $7,
 		    blocking_findings_count = $8,
 		    suppressed_findings_count = $9,
-		    error_message = $10,
-		    completed_at = $11
+		    target_section_id = $10,
+		    target_section_title = $11,
+		    error_message = $12,
+		    completed_at = $13
 		WHERE id = $1
-	`, analysis.ID, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.ErrorMessage), analysis.CompletedAt); err != nil {
+	`, analysis.ID, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.TargetSectionID), nullString(analysis.TargetSectionTitle), nullString(analysis.ErrorMessage), analysis.CompletedAt); err != nil {
 		return fmt.Errorf("update analysis run: %w", err)
 	}
 
@@ -107,9 +109,9 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO analysis_runs (
-			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, error_message, created_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt); err != nil {
+			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, target_section_id, target_section_title, error_message, created_at, completed_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.TargetSectionID), nullString(analysis.TargetSectionTitle), nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt); err != nil {
 		return fmt.Errorf("insert analysis run: %w", err)
 	}
 
@@ -222,7 +224,7 @@ func (r *AnalysisRepository) insertAnalysisPayload(ctx context.Context, tx pgx.T
 func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Analysis, error) {
 	var analysis domain.Analysis
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, COALESCE(error_message, ''), created_at, completed_at
+		SELECT id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, COALESCE(target_section_id, ''), COALESCE(target_section_title, ''), COALESCE(error_message, ''), created_at, completed_at
 		FROM analysis_runs
 		WHERE id = $1
 	`, id).Scan(
@@ -237,6 +239,8 @@ func (r *AnalysisRepository) GetByID(ctx context.Context, id string) (domain.Ana
 		&analysis.MergeBlocked,
 		&analysis.BlockingFindings,
 		&analysis.SuppressedFindings,
+		&analysis.TargetSectionID,
+		&analysis.TargetSectionTitle,
 		&analysis.ErrorMessage,
 		&analysis.CreatedAt,
 		&analysis.CompletedAt,
@@ -296,6 +300,7 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 	runRows, err := r.pool.Query(ctx, `
 		SELECT ar.id, ar.document_id, ar.mode, ar.status, ar.summary, ar.llm_provider, ar.llm_model, ar.chunk_count,
 		       ar.merge_blocked, ar.blocking_findings_count, ar.suppressed_findings_count,
+		       COALESCE(ar.target_section_id, ''), COALESCE(ar.target_section_title, ''),
 		       COALESCE(ar.error_message, ''), ar.created_at, ar.completed_at
 		FROM analysis_runs ar
 		JOIN documents d ON d.id = ar.document_id
@@ -326,6 +331,8 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 			&analysis.MergeBlocked,
 			&analysis.BlockingFindings,
 			&analysis.SuppressedFindings,
+			&analysis.TargetSectionID,
+			&analysis.TargetSectionTitle,
 			&analysis.ErrorMessage,
 			&analysis.CreatedAt,
 			&analysis.CompletedAt,

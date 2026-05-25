@@ -37,12 +37,14 @@ type AnalysisService struct {
 const maxFindingsPerRole = 5
 
 type StartAnalysisInput struct {
-	Name         string
-	Content      string
-	GoogleDocURL string
-	ContextKey   string
-	Source       domain.DocumentSource
-	Mode         domain.AnalysisMode
+	Name               string
+	Content            string
+	GoogleDocURL       string
+	ContextKey         string
+	Source             domain.DocumentSource
+	Mode               domain.AnalysisMode
+	TargetSectionID    string
+	TargetSectionTitle string
 }
 
 func NewAnalysisService(
@@ -99,7 +101,7 @@ func (s *AnalysisService) startAnalysisSync(ctx context.Context, input StartAnal
 	if err != nil {
 		return domain.Analysis{}, err
 	}
-	document, parsed, promptMemory, err := s.prepareAnalysisDocument(ctx, document, structuredDoc, mode, settings)
+	document, parsed, promptMemory, err := s.prepareAnalysisDocument(ctx, document, structuredDoc, mode, settings, input.TargetSectionID, input.TargetSectionTitle)
 	if err != nil {
 		return domain.Analysis{}, err
 	}
@@ -115,6 +117,8 @@ func (s *AnalysisService) startAnalysisSync(ctx context.Context, input StartAnal
 		return domain.Analysis{}, apperrors.New(apperrors.KindInternal, "analysis completed_at is missing")
 	}
 	analysis.ID = fmt.Sprintf("analysis_%d", analysis.CompletedAt.UnixNano())
+	analysis.TargetSectionID = strings.TrimSpace(input.TargetSectionID)
+	analysis.TargetSectionTitle = strings.TrimSpace(input.TargetSectionTitle)
 	for i := range analysis.Chunks {
 		analysis.Chunks[i].AnalysisID = analysis.ID
 	}
@@ -149,14 +153,16 @@ func (s *AnalysisService) startAnalysisAsync(ctx context.Context, input StartAna
 	}
 
 	analysis := domain.Analysis{
-		ID:         fmt.Sprintf("analysis_%d", now.UnixNano()),
-		DocumentID: document.ID,
-		Mode:       mode,
-		Status:     domain.AnalysisStatusQueued,
-		Provider:   s.llmProvider,
-		Model:      s.llmModel,
-		Summary:    "",
-		CreatedAt:  now,
+		ID:                 fmt.Sprintf("analysis_%d", now.UnixNano()),
+		DocumentID:         document.ID,
+		Mode:               mode,
+		Status:             domain.AnalysisStatusQueued,
+		Provider:           s.llmProvider,
+		Model:              s.llmModel,
+		TargetSectionID:    strings.TrimSpace(input.TargetSectionID),
+		TargetSectionTitle: strings.TrimSpace(input.TargetSectionTitle),
+		Summary:            "",
+		CreatedAt:          now,
 	}
 	if err := s.analysisRepo.Create(ctx, analysis); err != nil {
 		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to create queued analysis", err)
@@ -205,7 +211,7 @@ func (s *AnalysisService) ProcessAnalysis(ctx context.Context, analysisID string
 		return err
 	}
 
-	document, parsed, promptMemory, err := s.prepareAnalysisDocument(ctx, document, structuredDoc, analysis.Mode, settings)
+	document, parsed, promptMemory, err := s.prepareAnalysisDocument(ctx, document, structuredDoc, analysis.Mode, settings, analysis.TargetSectionID, analysis.TargetSectionTitle)
 	if err != nil {
 		_ = s.failAnalysis(ctx, analysis, err)
 		return err
@@ -220,6 +226,8 @@ func (s *AnalysisService) ProcessAnalysis(ctx context.Context, analysisID string
 	completed.ID = analysis.ID
 	completed.DocumentID = analysis.DocumentID
 	completed.CreatedAt = analysis.CreatedAt
+	completed.TargetSectionID = analysis.TargetSectionID
+	completed.TargetSectionTitle = analysis.TargetSectionTitle
 	if completed.ErrorMessage != "" {
 		err := apperrors.New(apperrors.KindDependency, completed.ErrorMessage)
 		_ = s.failAnalysis(ctx, analysis, err)
@@ -425,6 +433,8 @@ func (s *AnalysisService) prepareAnalysisDocument(
 	structuredDoc google.Document,
 	mode domain.AnalysisMode,
 	settings reviewconfig.Settings,
+	targetSectionID string,
+	targetSectionTitle string,
 ) (domain.Document, parser.ParsedDocument, domain.ReviewMemory, error) {
 	content := strings.TrimSpace(document.RawContent)
 	if strings.TrimSpace(structuredDoc.Content) != "" {
@@ -458,9 +468,16 @@ func (s *AnalysisService) prepareAnalysisDocument(
 		ChunkSize: settings.ChunkSize,
 		MaxChunks: settings.MaxChunks,
 	})
+	targetSections := document.Sections
+	if mode == domain.AnalysisModeIncrementalReview {
+		targetSections, err = resolveTargetSections(document.Sections, targetSectionID, targetSectionTitle)
+		if err != nil {
+			return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, err
+		}
+	}
 	parsed, err := documentParser.Parse(ctx, parser.ParseInput{
 		Content:  content,
-		Sections: document.Sections,
+		Sections: targetSections,
 	})
 	if err != nil {
 		return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
@@ -486,6 +503,7 @@ func (s *AnalysisService) buildCompletedAnalysis(
 	aggregatedFindings := deduplicateFindings(findings)
 	completedAt := time.Now().UTC()
 	mergeBlocked, blockingFindings := evaluateMergePolicy(aggregatedFindings, settings)
+	enrichedMemory := enrichReviewMemory(promptMemory, parsed.Sections, aggregatedFindings, buildSummary(aggregatedFindings, len(parsed.Chunks)))
 	return domain.Analysis{
 		DocumentID:         document.ID,
 		Mode:               mode,
@@ -499,7 +517,7 @@ func (s *AnalysisService) buildCompletedAnalysis(
 		Findings:           aggregatedFindings,
 		Chunks:             chunks,
 		Summary:            buildSummary(aggregatedFindings, len(parsed.Chunks)),
-		Memory:             promptMemory,
+		Memory:             enrichedMemory,
 		DocumentSections:   parsed.Sections,
 		CreatedAt:          createdAt,
 		CompletedAt:        &completedAt,
@@ -704,7 +722,9 @@ func deduplicateFindings(findings []domain.Finding) []domain.Finding {
 func memoryFindingKey(finding domain.Finding) string {
 	return strings.ToLower(strings.TrimSpace(finding.Role)) + "|" +
 		strings.ToLower(strings.TrimSpace(finding.Category)) + "|" +
-		strings.ToLower(strings.TrimSpace(finding.Problem))
+		normalizeMemoryProblem(finding.Problem) + "|" +
+		normalizeKeyPart(finding.SectionID) + "|" +
+		normalizeKeyPart(finding.SectionTitle)
 }
 
 func findingScore(finding domain.Finding) int {
@@ -749,6 +769,33 @@ func deriveReviewKey(source domain.DocumentSource, contextKey, externalID, name 
 	return string(source) + ":unnamed_document"
 }
 
+func resolveTargetSections(sections []domain.DocumentSection, targetSectionID, targetSectionTitle string) ([]domain.DocumentSection, error) {
+	targetSectionID = strings.TrimSpace(targetSectionID)
+	targetSectionTitle = strings.TrimSpace(targetSectionTitle)
+	if targetSectionID == "" && targetSectionTitle == "" {
+		return sections, nil
+	}
+	if len(sections) == 0 {
+		return nil, apperrors.New(apperrors.KindInvalidArgument, "target section is not available because document structure is missing")
+	}
+
+	selected := make([]domain.DocumentSection, 0, 1)
+	normalizedTitle := normalizeKeyPart(targetSectionTitle)
+	for _, section := range sections {
+		if targetSectionID != "" && strings.TrimSpace(section.ID) == targetSectionID {
+			selected = append(selected, section)
+			continue
+		}
+		if normalizedTitle != "" && normalizeKeyPart(section.Title) == normalizedTitle {
+			selected = append(selected, section)
+		}
+	}
+	if len(selected) == 0 {
+		return nil, apperrors.New(apperrors.KindInvalidArgument, "target section was not found in document structure")
+	}
+	return selected, nil
+}
+
 func normalizeKeyPart(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {
@@ -758,6 +805,46 @@ func normalizeKeyPart(value string) string {
 	value = strings.ReplaceAll(value, "\t", " ")
 	value = strings.Join(strings.Fields(value), "_")
 	return value
+}
+
+func normalizeMemoryProblem(value string) string {
+	normalized := normalizeKeyPart(value)
+	if normalized == "" {
+		return ""
+	}
+
+	replacements := []string{
+		"отсутствует_описание_",
+		"не_описано_",
+		"не_указано_",
+		"не_определено_",
+		"не_конкретизировано_",
+		"не_описан_",
+		"не_описаны_",
+		"отсутствует_",
+		"отсутствуют_",
+	}
+	for _, replacement := range replacements {
+		normalized = strings.TrimPrefix(normalized, replacement)
+	}
+
+	parts := strings.Split(normalized, "_")
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "", "механизм", "описание", "требования", "требование", "явно":
+			continue
+		default:
+			filtered = append(filtered, part)
+		}
+	}
+	if len(filtered) == 0 {
+		return normalized
+	}
+	if len(filtered) > 10 {
+		filtered = filtered[:10]
+	}
+	return strings.Join(filtered, "_")
 }
 
 func parsedChunkDescriptor(parsed parser.ParsedDocument, idx int) parser.ParsedChunk {

@@ -44,6 +44,8 @@ type rawConfig struct {
 		Architecture *bool `yaml:"architecture"`
 		Backend      *bool `yaml:"backend"`
 		Frontend     *bool `yaml:"frontend"`
+		Mobile       *bool `yaml:"mobile"`
+		Security     *bool `yaml:"security"`
 		DevOps       *bool `yaml:"devops"`
 		QA           *bool `yaml:"qa"`
 	} `yaml:"review"`
@@ -164,6 +166,8 @@ func resolveRoles(raw rawConfig, fallback []domain.ReviewerRole) []domain.Review
 		{value: raw.Review.Architecture, roles: []domain.ReviewerRole{domain.ReviewerRoleTechLead, domain.ReviewerRoleSolutionArchitect}},
 		{value: raw.Review.Backend, roles: []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer}},
 		{value: raw.Review.Frontend, roles: []domain.ReviewerRole{domain.ReviewerRoleSeniorFrontendEngineer}},
+		{value: raw.Review.Mobile, roles: []domain.ReviewerRole{domain.ReviewerRoleMobileLead}},
+		{value: raw.Review.Security, roles: []domain.ReviewerRole{domain.ReviewerRoleSecurityLead}},
 		{value: raw.Review.DevOps, roles: []domain.ReviewerRole{domain.ReviewerRoleDevOpsReviewer}},
 		{value: raw.Review.QA, roles: []domain.ReviewerRole{domain.ReviewerRoleQAReviewer}},
 	}

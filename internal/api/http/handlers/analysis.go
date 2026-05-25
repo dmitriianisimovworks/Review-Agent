@@ -26,12 +26,14 @@ type AnalysisHandler struct {
 }
 
 type StartAnalysisRequest struct {
-	Name         string `json:"name"`
-	Content      string `json:"content"`
-	GoogleDocURL string `json:"google_doc_url"`
-	ContextKey   string `json:"context_key"`
-	Source       string `json:"source"`
-	Mode         string `json:"mode"`
+	Name               string `json:"name"`
+	Content            string `json:"content"`
+	GoogleDocURL       string `json:"google_doc_url"`
+	ContextKey         string `json:"context_key"`
+	Source             string `json:"source"`
+	Mode               string `json:"mode"`
+	TargetSectionID    string `json:"target_section_id"`
+	TargetSectionTitle string `json:"target_section_title"`
 }
 
 type AnalysisResponse struct {
@@ -42,6 +44,8 @@ type AnalysisResponse struct {
 	MergeBlocked       bool             `json:"merge_blocked"`
 	BlockingFindings   int              `json:"blocking_findings"`
 	SuppressedFindings int              `json:"suppressed_findings"`
+	TargetSectionID    string           `json:"target_section_id,omitempty"`
+	TargetSectionTitle string           `json:"target_section_title,omitempty"`
 	Findings           []FindingPayload `json:"findings"`
 }
 
@@ -80,12 +84,14 @@ func (h *AnalysisHandler) Start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	analysis, err := h.analysisService.StartAnalysis(r.Context(), service.StartAnalysisInput{
-		Name:         req.Name,
-		Content:      req.Content,
-		GoogleDocURL: req.GoogleDocURL,
-		ContextKey:   req.ContextKey,
-		Source:       domain.DocumentSource(req.Source),
-		Mode:         domain.AnalysisMode(req.Mode),
+		Name:               req.Name,
+		Content:            req.Content,
+		GoogleDocURL:       req.GoogleDocURL,
+		ContextKey:         req.ContextKey,
+		Source:             domain.DocumentSource(req.Source),
+		Mode:               domain.AnalysisMode(req.Mode),
+		TargetSectionID:    req.TargetSectionID,
+		TargetSectionTitle: req.TargetSectionTitle,
 	})
 	if err != nil {
 		log.Printf("analysis start: source=%q mode=%q google_doc=%t context_key=%q err=%v", req.Source, req.Mode, req.GoogleDocURL != "", req.ContextKey, err)
@@ -160,6 +166,8 @@ func toAnalysisResponse(analysis domain.Analysis) AnalysisResponse {
 		MergeBlocked:       analysis.MergeBlocked,
 		BlockingFindings:   analysis.BlockingFindings,
 		SuppressedFindings: analysis.SuppressedFindings,
+		TargetSectionID:    analysis.TargetSectionID,
+		TargetSectionTitle: analysis.TargetSectionTitle,
 		Findings:           findings,
 	}
 }

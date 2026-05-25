@@ -45,6 +45,8 @@ review:
   architecture: false
   backend: true
   frontend: false
+  mobile: true
+  security: true
   devops: false
   qa: true
 severity:
@@ -86,6 +88,8 @@ document:
 
 	expectedRoles := []domain.ReviewerRole{
 		domain.ReviewerRoleSeniorBackendEngineer,
+		domain.ReviewerRoleMobileLead,
+		domain.ReviewerRoleSecurityLead,
 		domain.ReviewerRoleQAReviewer,
 	}
 	if len(settings.Roles) != len(expectedRoles) {
@@ -98,12 +102,12 @@ document:
 	}
 }
 
-func TestLoaderRejectsUnknownReviewKeys(t *testing.T) {
+func TestLoaderSupportsMobileAndSecurityRoles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultPath)
 	content := `
 review:
-  architecture: true
   mobile: true
+  security: true
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -114,7 +118,21 @@ review:
 		MaxChunks: 12,
 	})
 
-	if _, err := loader.Load(); err == nil {
-		t.Fatalf("expected unknown field error for unsupported mobile role")
+	settings, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	expectedRoles := []domain.ReviewerRole{
+		domain.ReviewerRoleMobileLead,
+		domain.ReviewerRoleSecurityLead,
+	}
+	if len(settings.Roles) != len(expectedRoles) {
+		t.Fatalf("expected %d roles, got %d", len(expectedRoles), len(settings.Roles))
+	}
+	for idx, role := range expectedRoles {
+		if settings.Roles[idx] != role {
+			t.Fatalf("expected role %d to be %s, got %s", idx, role, settings.Roles[idx])
+		}
 	}
 }
