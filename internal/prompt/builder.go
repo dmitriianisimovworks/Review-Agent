@@ -63,12 +63,20 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 Не переписывай документ целиком.
 Не давай общих советов без конкретики.
 Фокусируйся на замечаниях, которые действительно относятся к твоей роли.
-Верни максимум 5 замечаний.
-Старайся вернуть от 2 до 5 самых сильных замечаний.
-Если видишь только одну сильную проблему, попробуй выделить ещё хотя бы одну независимую проблему в рамках своей роли.
+Верни от 0 до 2 замечаний.
+Если в рамках твоей роли нет действительно сильных и доказуемых проблем, верни {"findings":[]}.
 Не выдумывай замечания ради количества.
 Не дублируй одно и то же замечание разными формулировками.
-Приоритизируй CRITICAL, затем ERROR, затем WARNING.
+Не завышай severity.
+По умолчанию используй WARNING или ERROR.
+Используй CRITICAL только если проблема прямо ведёт к одному из исходов:
+- financial loss;
+- security breach;
+- data loss или corruption;
+- production outage;
+- legal/compliance breach;
+- невозможность безопасно реализовать core flow.
+Если такого прямого основания нет в тексте, не ставь CRITICAL.
 Начни ответ сразу с JSON-объекта без префикса, без markdown и без пояснений.
 Первый символ ответа должен быть {.
 Если передан контекст прошлых ревью, учитывай его как память документа:
@@ -96,16 +104,17 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 - role должен быть одним из: tech_lead, solution_architect, senior_backend_engineer, senior_frontend_engineer, mobile_lead, devops_reviewer, qa_reviewer, security_lead;
 - severity должен быть одним из: INFO, WARNING, ERROR, CRITICAL;
 - category должна быть одной из: ambiguity, missing_requirement, contradiction, technical_risk, ux_problem, api_problem, frontend_risk, security_risk, devops_risk, scalability_risk;
-- findings должны быть конкретно привязаны к переданному фрагменту;
+- findings должны быть конкретно привязаны к переданному фрагменту и основаны на тексте этого фрагмента;
+- не добавляй замечание только потому, что это общая best practice, если в тексте нет основания для такого вывода;
 - каждый finding должен быть независимым; не дроби одну и ту же проблему на несколько почти одинаковых findings;
-- findings желательно должно быть не меньше 2, если в рамках роли есть хотя бы две независимые значимые проблемы;
-- findings должно быть не больше 5;
+- findings может быть 0;
+- findings должно быть не больше 2;
 - если нашёл много однотипных проблем, оставь только самые сильные и наиболее независимые;
 - если существенных проблем нет, верни {"findings":[]}.
 `, roleDisplayName(role), roleInstructions(role), role))
 
 	user := fmt.Sprintf(
-		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s%s\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON. Верни только один JSON-объект. Начни ответ сразу с {\"findings\": [...]}.\n\n%s",
+		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s%s\nПроведи ревью следующего фрагмента технической спецификации и верни от 0 до 2 замечаний в JSON. Верни только один JSON-объект. Начни ответ сразу с {\"findings\": [...]}.\n\n%s",
 		mode,
 		defaultString(string(input.Source), string(domain.DocumentSourceUpload)),
 		defaultString(input.DocumentName, "unnamed_document"),
@@ -169,43 +178,50 @@ func roleInstructions(role domain.ReviewerRole) string {
 - смотри на целостность требований и полноту бизнес-логики;
 - выделяй неясности, пропущенные ограничения, пробелы в acceptance criteria;
 - отмечай проблемы в жизненном цикле сущностей и ролевой модели;
-- эскалируй самые важные product/engineering gaps.`)
+- не уходи в детальные backend, devops, mobile или security замечания без явного blocker-impact.`)
 	case domain.ReviewerRoleSolutionArchitect:
 		return strings.TrimSpace(`
 - смотри на архитектурную целостность решения;
 - ищи проблемы в boundaries, интеграциях, масштабируемости и устойчивости;
 - отмечай противоречия между подсистемами и missing contracts;
-- выделяй production-риски и способы их снижения.`)
+- выделяй production-риски и способы их снижения;
+- не дублируй чисто ролевые backend/frontend/devops замечания, если это не архитектурный уровень.`)
 	case domain.ReviewerRoleSeniorBackendEngineer:
 		return strings.TrimSpace(`
 - смотри на API, транзакции, консистентность данных и конкурентный доступ;
 - ищи missing validation, идемпотентность, retry, data lifecycle и race conditions;
-- отмечай backend/scalability bottlenecks и риски деградации интеграций.`)
+- отмечай backend/scalability bottlenecks и риски деградации интеграций;
+- не описывай общие product, UX или mobile замечания.`)
 	case domain.ReviewerRoleSeniorFrontendEngineer:
 		return strings.TrimSpace(`
 - смотри на UX flows, empty/loading/error states и роли в интерфейсе;
 - ищи неполные пользовательские сценарии, невозможные состояния и frontend-риски;
-- отмечай проблемы пагинации, кеширования, синхронизации состояния и responsiveness.`)
+- отмечай проблемы пагинации, кеширования, синхронизации состояния и responsiveness;
+- не дублируй backend locking/audit/security замечания без явного frontend-impact.`)
 	case domain.ReviewerRoleMobileLead:
 		return strings.TrimSpace(`
 - смотри на mobile-specific сценарии: offline mode, unstable network, battery-sensitive flows и background behavior;
 - ищи проблемы синхронизации состояния, загрузки больших списков, пагинации и кеширования на мобильных клиентах;
-- отмечай риски слабой адаптации UX под мобильные ограничения и недостающие mobile edge cases.`)
+- отмечай риски слабой адаптации UX под мобильные ограничения и недостающие mobile edge cases;
+- не добавляй generic web/frontend/backend замечания, если нет прямого mobile-impact.`)
 	case domain.ReviewerRoleDevOpsReviewer:
 		return strings.TrimSpace(`
 - смотри на deployment, observability, backup/recovery и эксплуатационные риски;
 - ищи gaps в monitoring, alerting, секретах, конфигурации, SLA и отказоустойчивости;
-- отмечай риски частичной деградации и проблемные зависимости от внешних систем.`)
+- отмечай риски частичной деградации и проблемные зависимости от внешних систем;
+- не описывай общие product или UX gaps без прямого ops/runtime impact.`)
 	case domain.ReviewerRoleQAReviewer:
 		return strings.TrimSpace(`
 - смотри на тестируемость, acceptance criteria, edge cases и error flows;
 - ищи сценарии, которые невозможно однозначно проверить;
-- отмечай gaps в негативных кейсах, правах доступа, конкурентных сценариях и регрессиях.`)
+- отмечай gaps в негативных кейсах, правах доступа, конкурентных сценариях и регрессиях;
+- не дублируй security/devops/backend замечания, если проблема прежде всего не в тестируемости.`)
 	case domain.ReviewerRoleSecurityLead:
 		return strings.TrimSpace(`
 - смотри на auth, permissions, data exposure, file uploads и security boundaries;
 - ищи insecure flows, недостаточную валидацию, утечки секретов и missing security requirements;
-- отмечай production-риски вокруг доступа, инъекций, хранения чувствительных данных и abuse scenarios.`)
+- отмечай production-риски вокруг доступа, инъекций, хранения чувствительных данных и abuse scenarios;
+- не поднимай generic RBAC или lifecycle gaps до security finding без явного security-impact.`)
 	default:
 		return ""
 	}

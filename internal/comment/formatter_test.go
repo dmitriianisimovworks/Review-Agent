@@ -45,7 +45,7 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	if !strings.Contains(summary.Content, "Итоговый комментарий") {
 		t.Fatalf("summary draft missing title: %q", summary.Content)
 	}
-	if !strings.Contains(summary.Content, "Найдено 1 замечаний") {
+	if !strings.Contains(summary.Content, "Ключевых тем: 1") {
 		t.Fatalf("summary draft should contain compact totals: %q", summary.Content)
 	}
 	if summary.AnchorLine == nil || *summary.AnchorLine < *inline.AnchorLine {

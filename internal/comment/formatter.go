@@ -39,7 +39,8 @@ const (
 	maxTotalInlineComments   = 7
 	maxSummaryThemes         = 4
 	maxThemeExamples         = 2
-	maxRoleCommentFindings   = 3
+	maxRoleCommentFindings   = 2
+	maxRoleDrafts            = 5
 )
 
 func (f *DefaultFormatter) Format(document domain.Document, analysis domain.Analysis, mode PublishMode) []Draft {
@@ -58,7 +59,12 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 	grouped := groupFindingsByRole(findings)
 	order := domain.DefaultReviewerRoles()
 
-	drafts := make([]Draft, 0, len(grouped))
+	type roleDraft struct {
+		draft Draft
+		score int
+	}
+
+	collected := make([]roleDraft, 0, len(grouped))
 	for _, role := range order {
 		roleFindings := grouped[string(role)]
 		if len(roleFindings) == 0 {
@@ -90,7 +96,19 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 		if line := findAnchorLine(document.NormalizedContent, topFinding.SourceChunk); line != nil {
 			draft.AnchorLine = line
 		}
-		drafts = append(drafts, draft)
+		collected = append(collected, roleDraft{draft: draft, score: roleSeverityScore(roleFindings)})
+	}
+
+	sort.SliceStable(collected, func(i, j int) bool {
+		return collected[i].score > collected[j].score
+	})
+	if len(collected) > maxRoleDrafts {
+		collected = collected[:maxRoleDrafts]
+	}
+
+	drafts := make([]Draft, 0, len(collected))
+	for _, item := range collected {
+		drafts = append(drafts, item.draft)
 	}
 	return drafts
 }
@@ -308,37 +326,32 @@ func compactSummary(findings []domain.Finding) string {
 		return "Существенных замечаний по документу не обнаружено."
 	}
 
-	critical := 0
-	errorsCount := 0
-	warnings := 0
-	for _, finding := range findings {
-		switch finding.Severity {
+	groups := groupFindingsByTheme(findings)
+	criticalThemes := 0
+	errorThemes := 0
+	for _, group := range groups {
+		switch highestSeverity(group.Findings) {
 		case domain.SeverityCritical:
-			critical++
+			criticalThemes++
 		case domain.SeverityError:
-			errorsCount++
-		case domain.SeverityWarning:
-			warnings++
+			errorThemes++
 		}
 	}
 
-	parts := []string{fmt.Sprintf("Найдено %d замечаний", len(findings))}
-	if critical > 0 {
-		parts = append(parts, fmt.Sprintf("%d CRITICAL", critical))
+	parts := []string{fmt.Sprintf("Ключевых тем: %d", len(groups))}
+	if criticalThemes > 0 {
+		parts = append(parts, fmt.Sprintf("%d blocker-like", criticalThemes))
 	}
-	if errorsCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d ERROR", errorsCount))
-	}
-	if warnings > 0 {
-		parts = append(parts, fmt.Sprintf("%d WARNING", warnings))
+	if errorThemes > 0 {
+		parts = append(parts, fmt.Sprintf("%d important", errorThemes))
 	}
 
 	roleParts := summarizeRoles(findings)
 	if len(roleParts) > 0 {
-		return strings.Join(parts, ": ") + ". Активные роли: " + strings.Join(roleParts, ", ") + "."
+		return strings.Join(parts, ". ") + ". Основные роли: " + strings.Join(roleParts, ", ") + "."
 	}
 
-	return strings.Join(parts, ": ")
+	return strings.Join(parts, ". ")
 }
 
 func groupFindingsByTheme(findings []domain.Finding) []themeGroup {
@@ -524,6 +537,24 @@ func safeTruncate(value string, limit int) string {
 	}
 
 	return text + "..."
+}
+
+func roleSeverityScore(findings []domain.Finding) int {
+	score := 0
+	for _, finding := range findings {
+		score += severityRank(finding.Severity) * 10
+	}
+	return score
+}
+
+func highestSeverity(findings []domain.Finding) domain.Severity {
+	top := domain.SeverityInfo
+	for _, finding := range findings {
+		if severityRank(finding.Severity) > severityRank(top) {
+			top = finding.Severity
+		}
+	}
+	return top
 }
 
 func MarshalAnchor(line int) string {

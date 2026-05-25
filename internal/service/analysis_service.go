@@ -34,7 +34,14 @@ type AnalysisService struct {
 	jobRunner        jobs.Runner
 }
 
-const maxFindingsPerRole = 5
+const (
+	maxFindingsPerRole      = 2
+	maxFindingsFullReview   = 12
+	maxFindingsIncremental  = 6
+	maxFindingsPerTheme     = 2
+	maxSummaryThemes        = 4
+	maxSummaryThemeExamples = 2
+)
 
 type StartAnalysisInput struct {
 	Name               string
@@ -504,7 +511,7 @@ func (s *AnalysisService) buildCompletedAnalysis(
 		return domain.Analysis{ErrorMessage: err.Error()}
 	}
 
-	aggregatedFindings := deduplicateFindings(findings)
+	aggregatedFindings := shapeFinalFindings(findings, mode)
 	completedAt := time.Now().UTC()
 	mergeBlocked, blockingFindings := evaluateMergePolicy(aggregatedFindings, settings)
 	enrichedMemory := enrichReviewMemory(promptMemory, parsed.Sections, aggregatedFindings, buildSummary(aggregatedFindings, len(parsed.Chunks)))
@@ -576,36 +583,27 @@ func buildSummary(findings []domain.Finding, chunkCount int) string {
 	}
 
 	severityCounts := map[domain.Severity]int{}
-	categoryCounts := map[string]int{}
 	for _, finding := range findings {
 		severityCounts[finding.Severity]++
-		categoryCounts[finding.Category]++
 	}
 
-	topCategories := make([]string, 0, len(categoryCounts))
-	for category := range categoryCounts {
-		topCategories = append(topCategories, category)
-	}
-
-	sort.Slice(topCategories, func(i, j int) bool {
-		if categoryCounts[topCategories[i]] == categoryCounts[topCategories[j]] {
-			return topCategories[i] < topCategories[j]
+	groups := groupFindingsByTheme(findings)
+	titles := make([]string, 0, minAnalysisInt(len(groups), maxSummaryThemes))
+	for idx, group := range groups {
+		if idx >= maxSummaryThemes {
+			break
 		}
-		return categoryCounts[topCategories[i]] > categoryCounts[topCategories[j]]
-	})
-
-	if len(topCategories) > 3 {
-		topCategories = topCategories[:3]
+		titles = append(titles, group.title)
 	}
 
 	return fmt.Sprintf(
-		"Анализ завершён. Обработано фрагментов: %d. После фильтрации оставлено %d замечаний: %d CRITICAL, %d ERROR, %d WARNING. Основные категории: %s.",
+		"Анализ завершён. Обработано фрагментов: %d. Выделено %d ключевых замечаний: %d CRITICAL, %d ERROR, %d WARNING. Ключевые темы: %s.",
 		chunkCount,
 		len(findings),
 		severityCounts[domain.SeverityCritical],
 		severityCounts[domain.SeverityError],
 		severityCounts[domain.SeverityWarning],
-		strings.Join(topCategories, ", "),
+		strings.Join(titles, ", "),
 	)
 }
 
@@ -645,6 +643,24 @@ func filterRoleFindings(findings []domain.Finding) []domain.Finding {
 	return filtered
 }
 
+func shapeFinalFindings(findings []domain.Finding, mode domain.AnalysisMode) []domain.Finding {
+	normalized := normalizeFindingsSeverity(findings)
+	clustered := deduplicateFindingsByTheme(normalized)
+	limited := limitFindingsPerTheme(clustered)
+	sort.SliceStable(limited, func(i, j int) bool {
+		left := findingScore(limited[i])
+		right := findingScore(limited[j])
+		if left == right {
+			if limited[i].Category == limited[j].Category {
+				return limited[i].Problem < limited[j].Problem
+			}
+			return limited[i].Category < limited[j].Category
+		}
+		return left > right
+	})
+	return limitTotalFindings(limited, mode)
+}
+
 func (s *AnalysisService) loadReviewConfig() (reviewconfig.Settings, error) {
 	if s.reviewConfig == nil {
 		return reviewconfig.Settings{
@@ -654,6 +670,9 @@ func (s *AnalysisService) loadReviewConfig() (reviewconfig.Settings, error) {
 			MemoryEnabled:   true,
 			ChunkSize:       s.documentConfig.ChunkSize,
 			MaxChunks:       s.documentConfig.MaxChunks,
+			LLMTemperature:  0.3,
+			LLMTopP:         0.8,
+			LLMMaxTokens:    1100,
 		}, nil
 	}
 
@@ -723,6 +742,129 @@ func deduplicateFindings(findings []domain.Finding) []domain.Finding {
 	return result
 }
 
+type themeFindingGroup struct {
+	title    string
+	findings []domain.Finding
+}
+
+func groupFindingsByTheme(findings []domain.Finding) []themeFindingGroup {
+	buckets := map[string][]domain.Finding{}
+	for _, finding := range findings {
+		title := findingThemeTitle(finding)
+		buckets[title] = append(buckets[title], finding)
+	}
+
+	groups := make([]themeFindingGroup, 0, len(buckets))
+	for title, bucket := range buckets {
+		sort.SliceStable(bucket, func(i, j int) bool {
+			left := findingScore(bucket[i])
+			right := findingScore(bucket[j])
+			if left == right {
+				return bucket[i].Problem < bucket[j].Problem
+			}
+			return left > right
+		})
+		groups = append(groups, themeFindingGroup{
+			title:    title,
+			findings: bucket,
+		})
+	}
+
+	sort.SliceStable(groups, func(i, j int) bool {
+		if len(groups[i].findings) == len(groups[j].findings) {
+			left := findingScore(groups[i].findings[0])
+			right := findingScore(groups[j].findings[0])
+			if left == right {
+				return groups[i].title < groups[j].title
+			}
+			return left > right
+		}
+		return len(groups[i].findings) > len(groups[j].findings)
+	})
+
+	return groups
+}
+
+func normalizeFindingsSeverity(findings []domain.Finding) []domain.Finding {
+	normalized := make([]domain.Finding, 0, len(findings))
+	for _, finding := range findings {
+		item := finding
+		if item.Severity == domain.SeverityCritical && !hasCriticalEvidence(item) {
+			item.Severity = domain.SeverityError
+		}
+		normalized = append(normalized, item)
+	}
+	return normalized
+}
+
+func hasCriticalEvidence(finding domain.Finding) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		finding.Problem,
+		finding.WhyItIsBad,
+		finding.HowToFix,
+	}, " ")))
+	if text == "" {
+		return false
+	}
+
+	signals := []string{
+		"financial loss", "security breach", "data loss", "data corruption", "production outage",
+		"legal", "compliance", "fraud", "outage", "downtime", "core flow",
+		"финансов", "деньг", "средств", "утеч", "компрометац", "неавториз",
+		"потер", "поврежден", "коррупц", "недоступ", "простой", "комплаенс",
+		"регулятор", "невозможно реализовать", "невозможно безопасно реализовать",
+	}
+	for _, signal := range signals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func deduplicateFindingsByTheme(findings []domain.Finding) []domain.Finding {
+	result := make([]domain.Finding, 0, len(findings))
+	bestByKey := make(map[string]domain.Finding, len(findings))
+	for _, finding := range findings {
+		key := findingThemeBucketKey(finding) + "|" + normalizeMemoryProblem(finding.Problem)
+		existing, exists := bestByKey[key]
+		if !exists || findingScore(finding) > findingScore(existing) {
+			bestByKey[key] = finding
+		}
+	}
+
+	keys := make([]string, 0, len(bestByKey))
+	for key := range bestByKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		result = append(result, bestByKey[key])
+	}
+	return result
+}
+
+func limitFindingsPerTheme(findings []domain.Finding) []domain.Finding {
+	grouped := groupFindingsByTheme(findings)
+	result := make([]domain.Finding, 0, len(findings))
+	for _, group := range grouped {
+		limit := minAnalysisInt(len(group.findings), maxFindingsPerTheme)
+		result = append(result, group.findings[:limit]...)
+	}
+	return result
+}
+
+func limitTotalFindings(findings []domain.Finding, mode domain.AnalysisMode) []domain.Finding {
+	limit := maxFindingsFullReview
+	if mode == domain.AnalysisModeIncrementalReview {
+		limit = maxFindingsIncremental
+	}
+	if len(findings) <= limit {
+		return findings
+	}
+	return findings[:limit]
+}
+
 func memoryFindingKey(finding domain.Finding) string {
 	return strings.ToLower(strings.TrimSpace(finding.Role)) + "|" +
 		strings.ToLower(strings.TrimSpace(finding.Category)) + "|" +
@@ -758,6 +900,65 @@ func findingScore(finding domain.Finding) int {
 	}
 
 	return score
+}
+
+func findingThemeBucketKey(finding domain.Finding) string {
+	switch finding.Category {
+	case "technical_risk", "scalability_risk", "devops_risk":
+		return "technical"
+	case "security_risk":
+		return "security"
+	case "api_problem":
+		return "api"
+	case "ux_problem", "frontend_risk":
+		return "ux"
+	case "ambiguity":
+		return "ambiguity"
+	case "contradiction":
+		return "contradiction"
+	default:
+		return "missing"
+	}
+}
+
+func findingThemeTitle(finding domain.Finding) string {
+	switch finding.Category {
+	case "technical_risk", "scalability_risk", "devops_risk":
+		return "Технические и интеграционные риски"
+	case "security_risk":
+		return "Безопасность и доступы"
+	case "api_problem":
+		return "API и интеграционные контракты"
+	case "ux_problem", "frontend_risk":
+		return "UX и поведение интерфейса"
+	case "ambiguity":
+		return "Неоднозначные требования"
+	case "contradiction":
+		return "Противоречия"
+	default:
+		problem := strings.ToLower(finding.Problem)
+		switch {
+		case strings.Contains(problem, "роль"), strings.Contains(problem, "доступ"), strings.Contains(problem, "прав"):
+			return "Роли и права доступа"
+		case strings.Contains(problem, "sla"), strings.Contains(problem, "slo"), strings.Contains(problem, "производительност"):
+			return "SLA и нефункциональные требования"
+		case strings.Contains(problem, "audit"), strings.Contains(problem, "истори"), strings.Contains(problem, "лог"):
+			return "Audit trail и история изменений"
+		case strings.Contains(problem, "эскалац"), strings.Contains(problem, "статус"), strings.Contains(problem, "жизненн"):
+			return "Жизненный цикл кейса"
+		case strings.Contains(problem, "экспорт"), strings.Contains(problem, "отч"), strings.Contains(problem, "выгруз"):
+			return "Отчёты и выгрузки"
+		default:
+			return "Пропущенные требования"
+		}
+	}
+}
+
+func minAnalysisInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func deriveReviewKey(source domain.DocumentSource, contextKey, externalID, name string) string {
