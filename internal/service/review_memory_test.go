@@ -95,6 +95,9 @@ func TestEnrichReviewMemoryAddsStructuredKnowledge(t *testing.T) {
 	if len(enriched.UserRoles) == 0 {
 		t.Fatalf("expected user roles to be collected")
 	}
+	if len(enriched.ArchitectureDecisions) == 0 {
+		t.Fatalf("expected architecture decisions to be collected")
+	}
 }
 
 func TestFilterFindingsByModeSuppressesKnownIncrementalDuplicates(t *testing.T) {

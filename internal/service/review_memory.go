@@ -13,6 +13,7 @@ const (
 	reviewMemorySummaryLimit       = 2
 	reviewMemoryFindingsLimit      = 8
 	reviewMemoryArchitecturesLimit = 4
+	reviewMemoryDecisionLimit      = 4
 	reviewMemoryRoleLimit          = 2
 	reviewMemoryEntityLimit        = 6
 	reviewMemoryGlossaryLimit      = 6
@@ -81,11 +82,13 @@ func enrichReviewMemory(memory domain.ReviewMemory, sections []domain.DocumentSe
 	entities := collectMemoryEntities(findings)
 	glossary := collectMemoryGlossary(sections, findings, summary)
 	userRoles := collectMemoryUserRoles(sections, findings)
+	decisions := collectArchitectureDecisions(findings)
 
 	memory.Modules = limitUniqueStrings(modules, reviewMemoryModuleLimit)
 	memory.Entities = limitUniqueStrings(entities, reviewMemoryEntityLimit)
 	memory.Glossary = limitUniqueStrings(glossary, reviewMemoryGlossaryLimit)
 	memory.UserRoles = limitUniqueStrings(userRoles, reviewMemoryUserRoleLimit)
+	memory.ArchitectureDecisions = limitArchitectureDecisions(decisions, reviewMemoryDecisionLimit)
 	return memory
 }
 
@@ -332,6 +335,76 @@ func limitUniqueStrings(values []string, limit int) []string {
 		}
 		seen[key] = struct{}{}
 		result = append(result, safeTruncate(value, 80))
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
+func collectArchitectureDecisions(findings []domain.Finding) []domain.ArchitectureDecision {
+	result := make([]domain.ArchitectureDecision, 0)
+	for _, finding := range findings {
+		if !isArchitectureDecisionCandidate(finding) {
+			continue
+		}
+
+		decision := strings.TrimSpace(finding.HowToFix)
+		if decision == "" {
+			continue
+		}
+
+		context := strings.TrimSpace(finding.Problem)
+		if finding.SectionTitle != "" {
+			context = strings.TrimSpace(finding.SectionTitle + ": " + context)
+		}
+
+		status := "proposed"
+		if finding.Severity == domain.SeverityCritical || finding.Severity == domain.SeverityError {
+			status = "important"
+		}
+
+		result = append(result, domain.ArchitectureDecision{
+			Decision:  safeTruncate(decision, 140),
+			Context:   safeTruncate(context, 120),
+			Rationale: safeTruncate(strings.TrimSpace(finding.WhyItIsBad), 140),
+			Status:    status,
+		})
+	}
+	return result
+}
+
+func isArchitectureDecisionCandidate(finding domain.Finding) bool {
+	switch finding.Role {
+	case string(domain.ReviewerRoleTechLead),
+		string(domain.ReviewerRoleSolutionArchitect),
+		string(domain.ReviewerRoleSeniorBackendEngineer),
+		string(domain.ReviewerRoleDevOpsReviewer),
+		string(domain.ReviewerRoleSecurityLead):
+	default:
+		return false
+	}
+
+	return strings.TrimSpace(finding.HowToFix) != ""
+}
+
+func limitArchitectureDecisions(values []domain.ArchitectureDecision, limit int) []domain.ArchitectureDecision {
+	if limit <= 0 || len(values) == 0 {
+		return nil
+	}
+
+	result := make([]domain.ArchitectureDecision, 0, limit)
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		key := strings.ToLower(strings.TrimSpace(value.Decision))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
 		if len(result) >= limit {
 			break
 		}

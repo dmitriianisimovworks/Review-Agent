@@ -238,6 +238,17 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		}
 	}
 
+	if decisions := limitArchitectureDecisions(memory.ArchitectureDecisions, 2); len(decisions) > 0 {
+		parts = append(parts, "Архитектурные решения из прошлых ревью:")
+		for idx, decision := range decisions {
+			line := fmt.Sprintf("%d. %s", idx+1, decision.Decision)
+			if decision.Context != "" {
+				line += fmt.Sprintf(" (контекст: %s)", decision.Context)
+			}
+			parts = append(parts, line)
+		}
+	}
+
 	if modules := limitStrings(memory.Modules, 2); len(modules) > 0 {
 		parts = append(parts, "Известные модули/разделы:")
 		for idx, module := range modules {
@@ -288,6 +299,16 @@ func roleRelevantFindings(findings []domain.Finding, role domain.ReviewerRole, l
 	}
 
 	return selected
+}
+
+func limitArchitectureDecisions(values []domain.ArchitectureDecision, limit int) []domain.ArchitectureDecision {
+	if limit <= 0 || len(values) == 0 {
+		return nil
+	}
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
 }
 
 func limitStrings(values []string, limit int) []string {
