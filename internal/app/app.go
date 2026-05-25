@@ -31,7 +31,7 @@ type App struct {
 	server       *http.Server
 	pgPool       *pgxpool.Pool
 	redisClient  *goredis.Client
-	workerRun    func(context.Context) error
+	workerRuns   []func(context.Context) error
 	workerCancel context.CancelFunc
 	workerWG     sync.WaitGroup
 }
@@ -102,6 +102,12 @@ func New() (*App, error) {
 		pgPool.Close()
 		return nil, err
 	}
+	folderWatcher, err := google.NewDriveFolderWatcher(ctx, cfg.Google.ServiceAccountFile)
+	if err != nil {
+		redisClient.Close()
+		pgPool.Close()
+		return nil, err
+	}
 
 	analysisService := service.NewAnalysisService(
 		documentRepo,
@@ -127,6 +133,15 @@ func New() (*App, error) {
 		googleOAuthRepo,
 		googleOAuthProvider,
 	)
+	googleInboxService := service.NewGoogleInboxService(
+		cfg.Google.InboxFolderID,
+		time.Duration(cfg.Google.InboxPollSeconds)*time.Second,
+		folderWatcher,
+		documentRepo,
+		analysisService,
+		commentService,
+		docsPublisher,
+	)
 
 	handler := api.NewRouter(api.Dependencies{
 		AnalysisService: &analysisFacade{
@@ -146,28 +161,38 @@ func New() (*App, error) {
 		server:      server,
 		pgPool:      pgPool,
 		redisClient: redisClient,
-		workerRun: func(ctx context.Context) error {
-			return jobRunner.Run(ctx, func(jobCtx context.Context, analysisID string) error {
-				if err := analysisService.ProcessAnalysis(jobCtx, analysisID); err != nil {
-					log.Printf("analysis worker: analysis_id=%q err=%v", analysisID, err)
-				}
-				return nil
-			})
+		workerRuns: []func(context.Context) error{
+			func(ctx context.Context) error {
+				return jobRunner.Run(ctx, func(jobCtx context.Context, analysisID string) error {
+					if err := analysisService.ProcessAnalysis(jobCtx, analysisID); err != nil {
+						log.Printf("analysis worker: analysis_id=%q err=%v", analysisID, err)
+					}
+					return nil
+				})
+			},
+			func(ctx context.Context) error {
+				return googleInboxService.Run(ctx)
+			},
 		},
 	}, nil
 }
 
 func (a *App) Run() error {
-	if a.workerRun != nil {
+	if len(a.workerRuns) > 0 {
 		workerCtx, cancel := context.WithCancel(context.Background())
 		a.workerCancel = cancel
-		a.workerWG.Add(1)
-		go func() {
-			defer a.workerWG.Done()
-			if err := a.workerRun(workerCtx); err != nil {
-				log.Printf("analysis worker stopped with error: %v", err)
+		for _, workerRun := range a.workerRuns {
+			if workerRun == nil {
+				continue
 			}
-		}()
+			a.workerWG.Add(1)
+			go func(run func(context.Context) error) {
+				defer a.workerWG.Done()
+				if err := run(workerCtx); err != nil {
+					log.Printf("background worker stopped with error: %v", err)
+				}
+			}(workerRun)
+		}
 	}
 
 	err := a.server.ListenAndServe()

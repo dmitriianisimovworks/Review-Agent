@@ -43,6 +43,10 @@ func (r *stubDocumentRepo) GetByID(_ context.Context, _ string) (domain.Document
 	return r.got, nil
 }
 
+func (r *stubDocumentRepo) HasBySourceAndExternalID(_ context.Context, source domain.DocumentSource, externalID string) (bool, error) {
+	return r.got.Source == source && r.got.ExternalID == externalID, nil
+}
+
 type stubAnalysisRepo struct {
 	saved     domain.Analysis
 	got       domain.Analysis

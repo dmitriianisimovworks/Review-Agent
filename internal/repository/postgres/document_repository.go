@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,4 +65,18 @@ func (r *DocumentRepository) GetByID(ctx context.Context, id string) (domain.Doc
 	}
 
 	return document, nil
+}
+
+func (r *DocumentRepository) HasBySourceAndExternalID(ctx context.Context, source domain.DocumentSource, externalID string) (bool, error) {
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM documents
+			WHERE source = $1 AND external_id = $2
+		)
+	`, source, externalID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check document existence by external id: %w", err)
+	}
+	return exists, nil
 }

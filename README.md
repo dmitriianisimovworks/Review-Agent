@@ -112,6 +112,8 @@ Infrastructure and secrets remain environment-based.
 The backend reads the document through a Google service account configured via:
 
 - `GOOGLE_SERVICE_ACCOUNT_FILE`
+- `GOOGLE_INBOX_FOLDER_ID` (optional inbox folder for auto-review flow)
+- `GOOGLE_INBOX_POLL_SECONDS` (optional poll interval)
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GOOGLE_OAUTH_REDIRECT_URL`

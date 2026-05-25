@@ -19,6 +19,7 @@ type DocumentRepository interface {
 	Save(ctx context.Context, document domain.Document) error
 	Update(ctx context.Context, document domain.Document) error
 	GetByID(ctx context.Context, id string) (domain.Document, error)
+	HasBySourceAndExternalID(ctx context.Context, source domain.DocumentSource, externalID string) (bool, error)
 }
 
 type GoogleOAuthConnectionRepository interface {

@@ -62,6 +62,8 @@ type GoogleConfig struct {
 	OAuthClientSecret  string
 	OAuthRedirectURL   string
 	OAuthScopes        []string
+	InboxFolderID      string
+	InboxPollSeconds   int
 }
 
 func Load() (Config, error) {
@@ -101,6 +103,8 @@ func Load() (Config, error) {
 			OAuthClientSecret:  getEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
 			OAuthRedirectURL:   getEnv("GOOGLE_OAUTH_REDIRECT_URL"),
 			OAuthScopes:        splitCSV(getEnv("GOOGLE_OAUTH_SCOPES")),
+			InboxFolderID:      getEnv("GOOGLE_INBOX_FOLDER_ID"),
+			InboxPollSeconds:   getEnvInt("GOOGLE_INBOX_POLL_SECONDS", 15),
 		},
 	}
 
@@ -197,6 +201,10 @@ func validate(cfg Config) error {
 	} else {
 		requireScope(&issues, cfg.Google.OAuthScopes, "https://www.googleapis.com/auth/userinfo.email")
 		requireScope(&issues, cfg.Google.OAuthScopes, "https://www.googleapis.com/auth/userinfo.profile")
+	}
+
+	if cfg.Google.InboxFolderID != "" && cfg.Google.InboxPollSeconds < 5 {
+		issues = append(issues, "GOOGLE_INBOX_POLL_SECONDS must be >= 5 when GOOGLE_INBOX_FOLDER_ID is set")
 	}
 
 	if len(issues) == 0 {
