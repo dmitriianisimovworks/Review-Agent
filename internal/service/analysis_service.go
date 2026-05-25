@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type AnalysisService struct {
 	documentConfig   config.DocumentConfig
 	reviewConfig     reviewconfig.Provider
 	jobRunner        jobs.Runner
+	vectorIndexer    AnalysisVectorIndexer
 }
 
 const (
@@ -80,6 +82,10 @@ func NewAnalysisService(
 		reviewConfig:     reviewConfig,
 		jobRunner:        jobRunner,
 	}
+}
+
+func (s *AnalysisService) SetVectorIndexer(indexer AnalysisVectorIndexer) {
+	s.vectorIndexer = indexer
 }
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
@@ -136,6 +142,7 @@ func (s *AnalysisService) startAnalysisSync(ctx context.Context, input StartAnal
 	if s.analysisCache != nil {
 		_ = s.analysisCache.Set(ctx, analysis)
 	}
+	s.indexAnalysisBestEffort(ctx, document, analysis)
 
 	return analysis, nil
 }
@@ -252,7 +259,17 @@ func (s *AnalysisService) ProcessAnalysis(ctx context.Context, analysisID string
 	if s.analysisCache != nil {
 		_ = s.analysisCache.Set(ctx, completed)
 	}
+	s.indexAnalysisBestEffort(ctx, document, completed)
 	return nil
+}
+
+func (s *AnalysisService) indexAnalysisBestEffort(ctx context.Context, document domain.Document, analysis domain.Analysis) {
+	if s.vectorIndexer == nil {
+		return
+	}
+	if err := s.vectorIndexer.IndexAnalysis(ctx, document, analysis); err != nil {
+		log.Printf("vector indexing failed: analysis_id=%q document_id=%q err=%v", analysis.ID, document.ID, err)
+	}
 }
 
 func (s *AnalysisService) analyzeChunksByRoles(

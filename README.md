@@ -43,6 +43,33 @@ docker compose ps
 
 The compose stack uses an internal-only Docker network and does not publish ports externally yet.
 
+## Optional Vector Memory
+
+The backend can also write semantic review artifacts to Qdrant as a separate infrastructure service.
+
+When `VECTOR_ENABLED=true`, the app will embed and index:
+
+- analysis summaries;
+- normalized findings;
+- parsed document sections.
+
+This indexing is best-effort and does not block the main review pipeline if Qdrant or the embedding provider is unavailable.
+
+Environment variables:
+
+```env
+VECTOR_ENABLED=true
+VECTOR_DB_URL=http://qdrant:6333
+VECTOR_DB_API_KEY=
+VECTOR_COLLECTION=review_memory
+VECTOR_EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
+VECTOR_EMBEDDING_API_KEY=replace_me
+VECTOR_EMBEDDING_MODEL=openai/text-embedding-3-small
+VECTOR_EMBEDDING_TIMEOUT_SECONDS=30
+```
+
+The default Docker Compose stack now includes a dedicated `qdrant` container.
+
 ## Google Docs ingestion
 
 `POST /api/v1/analyses` also supports Google Docs as a source:

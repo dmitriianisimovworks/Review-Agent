@@ -13,6 +13,7 @@ type Config struct {
 	App      AppConfig
 	HTTP     HTTPConfig
 	LLM      LLMConfig
+	Vector   VectorConfig
 	Redis    RedisConfig
 	DB       DatabaseConfig
 	Cache    CacheConfig
@@ -40,6 +41,17 @@ type LLMConfig struct {
 	Temperature float64
 	TopP        float64
 	MaxTokens   int
+}
+
+type VectorConfig struct {
+	Enabled                 bool
+	DBURL                   string
+	DBAPIKey                string
+	Collection              string
+	EmbeddingBaseURL        string
+	EmbeddingAPIKey         string
+	EmbeddingModel          string
+	EmbeddingTimeoutSeconds int
 }
 
 type RedisConfig struct {
@@ -89,6 +101,16 @@ func Load() (Config, error) {
 			Temperature: getEnvFloat("LLM_TEMPERATURE", 0.3),
 			TopP:        getEnvFloat("LLM_TOP_P", 0.8),
 			MaxTokens:   getEnvInt("LLM_MAX_TOKENS", 1100),
+		},
+		Vector: VectorConfig{
+			Enabled:                 getEnvBool("VECTOR_ENABLED", false),
+			DBURL:                   getEnvOrDefault("VECTOR_DB_URL", "http://qdrant:6333"),
+			DBAPIKey:                getEnv("VECTOR_DB_API_KEY"),
+			Collection:              getEnvOrDefault("VECTOR_COLLECTION", "review_memory"),
+			EmbeddingBaseURL:        getEnvOrDefault("VECTOR_EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"),
+			EmbeddingAPIKey:         getEnvOrDefault("VECTOR_EMBEDDING_API_KEY", getEnv("LLM_API_KEY")),
+			EmbeddingModel:          getEnvOrDefault("VECTOR_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
+			EmbeddingTimeoutSeconds: getEnvInt("VECTOR_EMBEDDING_TIMEOUT_SECONDS", 30),
 		},
 		Redis: RedisConfig{
 			URL: getEnv("REDIS_URL"),
@@ -154,6 +176,20 @@ func getEnvInt(key string, fallback int) int {
 	return parsed
 }
 
+func getEnvBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	case "":
+		return fallback
+	default:
+		return fallback
+	}
+}
+
 func getEnvFloat(key string, fallback float64) float64 {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -194,6 +230,15 @@ func validate(cfg Config) error {
 	validateURL(&issues, "REDIS_URL", cfg.Redis.URL)
 	validateURL(&issues, "LLM_BASE_URL", cfg.LLM.BaseURL)
 	validateURL(&issues, "GOOGLE_OAUTH_REDIRECT_URL", cfg.Google.OAuthRedirectURL)
+	if cfg.Vector.Enabled {
+		validateURL(&issues, "VECTOR_DB_URL", cfg.Vector.DBURL)
+		validateURL(&issues, "VECTOR_EMBEDDING_BASE_URL", cfg.Vector.EmbeddingBaseURL)
+		requireNonPlaceholder(&issues, "VECTOR_EMBEDDING_API_KEY", cfg.Vector.EmbeddingAPIKey)
+		requireNonPlaceholder(&issues, "VECTOR_EMBEDDING_MODEL", cfg.Vector.EmbeddingModel)
+		if cfg.Vector.EmbeddingTimeoutSeconds < 5 {
+			issues = append(issues, "VECTOR_EMBEDDING_TIMEOUT_SECONDS must be >= 5")
+		}
+	}
 
 	if cfg.Document.ChunkSize < 500 {
 		issues = append(issues, "DOCUMENT_CHUNK_SIZE must be >= 500")
