@@ -69,6 +69,8 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 Не выдумывай замечания ради количества.
 Не дублируй одно и то же замечание разными формулировками.
 Приоритизируй CRITICAL, затем ERROR, затем WARNING.
+Начни ответ сразу с JSON-объекта без префикса, без markdown и без пояснений.
+Первый символ ответа должен быть {.
 Если передан контекст прошлых ревью, учитывай его как память документа:
 - помни уже найденные замечания, риски и архитектурные договорённости;
 - не повторяй слово в слово уже известные проблемы, если в них нет новой грани, новой причины или роста severity;
@@ -95,13 +97,15 @@ func (b *DefaultBuilder) Build(input Input) BuiltPrompt {
 - severity должен быть одним из: INFO, WARNING, ERROR, CRITICAL;
 - category должна быть одной из: ambiguity, missing_requirement, contradiction, technical_risk, ux_problem, api_problem, frontend_risk, security_risk, devops_risk, scalability_risk;
 - findings должны быть конкретно привязаны к переданному фрагменту;
+- каждый finding должен быть независимым; не дроби одну и ту же проблему на несколько почти одинаковых findings;
 - findings желательно должно быть не меньше 2, если в рамках роли есть хотя бы две независимые значимые проблемы;
 - findings должно быть не больше 5;
+- если нашёл много однотипных проблем, оставь только самые сильные и наиболее независимые;
 - если существенных проблем нет, верни {"findings":[]}.
 `, roleDisplayName(role), roleInstructions(role), role))
 
 	user := fmt.Sprintf(
-		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s%s\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON.\n\n%s",
+		"Режим анализа: %s\nИсточник документа: %s\nНазвание документа: %s\nРоль ревью: %s\nФрагмент: %d из %d\n%s%s\nПроведи ревью следующего фрагмента технической спецификации и верни замечания в JSON. Верни только один JSON-объект. Начни ответ сразу с {\"findings\": [...]}.\n\n%s",
 		mode,
 		defaultString(string(input.Source), string(domain.DocumentSourceUpload)),
 		defaultString(input.DocumentName, "unnamed_document"),

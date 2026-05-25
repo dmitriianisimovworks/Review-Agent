@@ -32,11 +32,14 @@ type HTTPConfig struct {
 }
 
 type LLMConfig struct {
-	Provider string
-	BaseURL  string
-	APIKey   string
-	Model    string
-	Timeout  int
+	Provider    string
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Timeout     int
+	Temperature float64
+	TopP        float64
+	MaxTokens   int
 }
 
 type RedisConfig struct {
@@ -78,11 +81,14 @@ func Load() (Config, error) {
 			Address: getEnvOrDefault("HTTP_ADDRESS", ":8080"),
 		},
 		LLM: LLMConfig{
-			Provider: getEnvOrDefault("LLM_PROVIDER", "openai_compatible"),
-			BaseURL:  getEnv("LLM_BASE_URL"),
-			APIKey:   getEnv("LLM_API_KEY"),
-			Model:    getEnv("LLM_MODEL"),
-			Timeout:  getEnvInt("LLM_TIMEOUT_SECONDS", 90),
+			Provider:    getEnvOrDefault("LLM_PROVIDER", "openai_compatible"),
+			BaseURL:     getEnv("LLM_BASE_URL"),
+			APIKey:      getEnv("LLM_API_KEY"),
+			Model:       getEnv("LLM_MODEL"),
+			Timeout:     getEnvInt("LLM_TIMEOUT_SECONDS", 90),
+			Temperature: getEnvFloat("LLM_TEMPERATURE", 0.3),
+			TopP:        getEnvFloat("LLM_TOP_P", 0.8),
+			MaxTokens:   getEnvInt("LLM_MAX_TOKENS", 1100),
 		},
 		Redis: RedisConfig{
 			URL: getEnv("REDIS_URL"),
@@ -148,6 +154,23 @@ func getEnvInt(key string, fallback int) int {
 	return parsed
 }
 
+func getEnvFloat(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	var parsed float64
+	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil {
+		return fallback
+	}
+	if parsed <= 0 {
+		return fallback
+	}
+
+	return parsed
+}
+
 func validate(cfg Config) error {
 	var issues []string
 
@@ -182,6 +205,15 @@ func validate(cfg Config) error {
 
 	if cfg.LLM.Timeout < 5 {
 		issues = append(issues, "LLM_TIMEOUT_SECONDS must be >= 5")
+	}
+	if cfg.LLM.Temperature < 0 || cfg.LLM.Temperature > 2 {
+		issues = append(issues, "LLM_TEMPERATURE must be between 0 and 2")
+	}
+	if cfg.LLM.TopP <= 0 || cfg.LLM.TopP > 1 {
+		issues = append(issues, "LLM_TOP_P must be > 0 and <= 1")
+	}
+	if cfg.LLM.MaxTokens < 128 {
+		issues = append(issues, "LLM_MAX_TOKENS must be >= 128")
 	}
 
 	if cfg.Cache.AnalysisTTLSeconds < 30 {

@@ -29,6 +29,9 @@ type AnalyzeInput struct {
 	Source       domain.DocumentSource
 	Role         domain.ReviewerRole
 	Memory       domain.ReviewMemory
+	Temperature  float64
+	TopP         float64
+	MaxTokens    int
 }
 
 type ChunkAnalysisResult struct {
@@ -47,6 +50,10 @@ type OpenAICompatibleClient struct {
 	baseURL       string
 	apiKey        string
 	model         string
+	useJSONPrefix bool
+	temperature   float64
+	topP          float64
+	maxTokens     int
 	httpClient    *http.Client
 	promptBuilder prompt.Builder
 }
@@ -55,6 +62,8 @@ type chatCompletionRequest struct {
 	Model          string            `json:"model"`
 	Messages       []chatMessage     `json:"messages"`
 	Temperature    float64           `json:"temperature"`
+	TopP           float64           `json:"top_p,omitempty"`
+	MaxTokens      int               `json:"max_tokens,omitempty"`
 	ResponseFormat map[string]string `json:"response_format,omitempty"`
 }
 
@@ -92,6 +101,10 @@ func NewOpenAICompatibleClient(cfg config.LLMConfig, promptBuilder prompt.Builde
 		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
 		apiKey:        cfg.APIKey,
 		model:         cfg.Model,
+		useJSONPrefix: shouldUseDeepSeekJSONPrefix(cfg),
+		temperature:   cfg.Temperature,
+		topP:          cfg.TopP,
+		maxTokens:     cfg.MaxTokens,
 		httpClient:    &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second},
 		promptBuilder: promptBuilder,
 	}
@@ -116,7 +129,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 		Memory:       input.Memory,
 	})
 
-	return c.executePrompt(ctx, builtPrompt, input.Role, input.ChunkText, input.ChunkIndex, domain.DocumentSection{
+	return c.executePrompt(ctx, builtPrompt, input, domain.DocumentSection{
 		Title: input.SectionTitle,
 		Level: input.SectionLevel,
 	})
@@ -125,9 +138,7 @@ func (c *OpenAICompatibleClient) AnalyzeChunk(ctx context.Context, input Analyze
 func (c *OpenAICompatibleClient) executePrompt(
 	ctx context.Context,
 	builtPrompt prompt.BuiltPrompt,
-	fallbackRole domain.ReviewerRole,
-	sourceChunk string,
-	chunkIndex int,
+	input AnalyzeInput,
 	section domain.DocumentSection,
 ) (ChunkAnalysisResult, error) {
 	var (
@@ -136,7 +147,7 @@ func (c *OpenAICompatibleClient) executePrompt(
 		err     error
 	)
 	for attempt := 1; attempt <= maxStructuredOutputAttempts; attempt++ {
-		content, err = c.requestLLMContent(ctx, builtPrompt)
+		content, err = c.requestLLMContent(ctx, builtPrompt, input)
 		if err != nil {
 			return ChunkAnalysisResult{}, err
 		}
@@ -153,14 +164,14 @@ func (c *OpenAICompatibleClient) executePrompt(
 	findings := make([]domain.Finding, 0, len(parsed.Findings))
 	for _, finding := range parsed.Findings {
 		item := domain.Finding{
-			ChunkIndex:   chunkIndex,
-			Role:         normalizeRole(fallbackRole, finding.Role),
+			ChunkIndex:   input.ChunkIndex,
+			Role:         normalizeRole(input.Role, finding.Role),
 			Category:     normalizeCategory(finding.Category),
 			Severity:     normalizeSeverity(finding.Severity),
 			Problem:      strings.TrimSpace(finding.Problem),
 			WhyItIsBad:   strings.TrimSpace(finding.WhyItIsBad),
 			HowToFix:     strings.TrimSpace(finding.HowToFix),
-			SourceChunk:  sourceChunk,
+			SourceChunk:  input.ChunkText,
 			SectionID:    section.ID,
 			SectionTitle: section.Title,
 		}
@@ -169,21 +180,33 @@ func (c *OpenAICompatibleClient) executePrompt(
 
 	return ChunkAnalysisResult{
 		Findings:      findings,
-		PromptVersion: promptVersion(chunkIndex),
+		PromptVersion: promptVersion(input.ChunkIndex),
 		SystemPrompt:  builtPrompt.System,
 		UserPrompt:    builtPrompt.User,
 		RawResponse:   content,
 	}, nil
 }
 
-func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPrompt prompt.BuiltPrompt) (string, error) {
+func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPrompt prompt.BuiltPrompt, input AnalyzeInput) (string, error) {
+	temperature := c.temperature
+	if input.Temperature >= 0 {
+		temperature = input.Temperature
+	}
+	topP := c.topP
+	if input.TopP > 0 {
+		topP = input.TopP
+	}
+	maxTokens := c.maxTokens
+	if input.MaxTokens > 0 {
+		maxTokens = input.MaxTokens
+	}
+
 	payload := chatCompletionRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{Role: "system", Content: builtPrompt.System},
-			{Role: "user", Content: builtPrompt.User},
-		},
-		Temperature: 0.1,
+		Model:       c.model,
+		Messages:    buildChatMessages(builtPrompt, c.useJSONPrefix),
+		Temperature: temperature,
+		TopP:        topP,
+		MaxTokens:   maxTokens,
 		ResponseFormat: map[string]string{
 			"type": "json_object",
 		},
@@ -235,6 +258,26 @@ func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPro
 	}
 
 	return completion.Choices[0].Message.Content, nil
+}
+
+func buildChatMessages(builtPrompt prompt.BuiltPrompt, useJSONPrefix bool) []chatMessage {
+	messages := []chatMessage{
+		{Role: "system", Content: builtPrompt.System},
+		{Role: "user", Content: builtPrompt.User},
+	}
+	if useJSONPrefix {
+		messages = append(messages, chatMessage{
+			Role:    "assistant",
+			Content: "{\"findings\":",
+		})
+	}
+	return messages
+}
+
+func shouldUseDeepSeekJSONPrefix(cfg config.LLMConfig) bool {
+	baseURL := strings.ToLower(strings.TrimSpace(cfg.BaseURL))
+	model := strings.ToLower(strings.TrimSpace(cfg.Model))
+	return strings.Contains(baseURL, "deepseek.com") || strings.Contains(model, "deepseek")
 }
 
 func promptVersion(chunkIndex int) string {

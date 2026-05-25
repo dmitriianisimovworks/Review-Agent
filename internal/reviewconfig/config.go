@@ -32,6 +32,9 @@ type Settings struct {
 	MemoryEnabled      bool
 	ChunkSize          int
 	MaxChunks          int
+	LLMTemperature     float64
+	LLMTopP            float64
+	LLMMaxTokens       int
 }
 
 type Loader struct {
@@ -62,6 +65,11 @@ type rawConfig struct {
 	Document struct {
 		ChunkSize *int `yaml:"chunk_size"`
 	} `yaml:"document"`
+	LLM struct {
+		Temperature *float64 `yaml:"temperature"`
+		TopP        *float64 `yaml:"top_p"`
+		MaxTokens   *int     `yaml:"max_tokens"`
+	} `yaml:"llm"`
 }
 
 func NewLoader(path string, defaults Defaults) *Loader {
@@ -98,6 +106,24 @@ func (l *Loader) Load() (Settings, error) {
 			return Settings{}, errors.New("review config document.chunk_size must be >= 500")
 		}
 		settings.ChunkSize = *raw.Document.ChunkSize
+	}
+	if raw.LLM.Temperature != nil {
+		if *raw.LLM.Temperature < 0 || *raw.LLM.Temperature > 2 {
+			return Settings{}, errors.New("review config llm.temperature must be between 0 and 2")
+		}
+		settings.LLMTemperature = *raw.LLM.Temperature
+	}
+	if raw.LLM.TopP != nil {
+		if *raw.LLM.TopP <= 0 || *raw.LLM.TopP > 1 {
+			return Settings{}, errors.New("review config llm.top_p must be > 0 and <= 1")
+		}
+		settings.LLMTopP = *raw.LLM.TopP
+	}
+	if raw.LLM.MaxTokens != nil {
+		if *raw.LLM.MaxTokens < 128 {
+			return Settings{}, errors.New("review config llm.max_tokens must be >= 128")
+		}
+		settings.LLMMaxTokens = *raw.LLM.MaxTokens
 	}
 
 	if raw.Severity.CriticalBlockMerge != nil {
@@ -153,6 +179,9 @@ func defaultSettings(defaults Defaults) Settings {
 		MemoryEnabled:      true,
 		ChunkSize:          chunkSize,
 		MaxChunks:          maxChunks,
+		LLMTemperature:     0.3,
+		LLMTopP:            0.8,
+		LLMMaxTokens:       1100,
 	}
 }
 

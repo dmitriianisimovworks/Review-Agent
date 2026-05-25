@@ -98,6 +98,11 @@ context:
 
 document:
   chunk_size: 5000
+
+llm:
+  temperature: 0.3
+  top_p: 0.8
+  max_tokens: 1100
 ```
 
 Place it at `.ai-spec-review.yml` in the working directory. This config controls review behavior only:
@@ -106,6 +111,7 @@ Place it at `.ai-spec-review.yml` in the working directory. This config controls
 - default publish strategy for comments;
 - whether review memory is enabled;
 - document chunk size for analysis.
+- generation settings for the LLM request.
 
 Infrastructure and secrets remain environment-based.
 

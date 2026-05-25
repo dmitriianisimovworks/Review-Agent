@@ -255,6 +255,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 	mode domain.AnalysisMode,
 	now time.Time,
 	memory domain.ReviewMemory,
+	settings reviewconfig.Settings,
 	roles []domain.ReviewerRole,
 ) ([]domain.AnalysisChunk, []domain.Finding, int, error) {
 	type llmOutcome struct {
@@ -288,6 +289,9 @@ func (s *AnalysisService) analyzeChunksByRoles(
 					Source:       document.Source,
 					Role:         role,
 					Memory:       memory,
+					Temperature:  settings.LLMTemperature,
+					TopP:         settings.LLMTopP,
+					MaxTokens:    settings.LLMMaxTokens,
 				})
 				if err != nil {
 					return apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d for role %s", idx+1, role), err)
@@ -495,7 +499,7 @@ func (s *AnalysisService) buildCompletedAnalysis(
 	createdAt time.Time,
 	settings reviewconfig.Settings,
 ) domain.Analysis {
-	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, createdAt, promptMemory, settings.Roles)
+	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, createdAt, promptMemory, settings, settings.Roles)
 	if err != nil {
 		return domain.Analysis{ErrorMessage: err.Error()}
 	}

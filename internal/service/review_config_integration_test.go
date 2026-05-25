@@ -193,6 +193,9 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 				MemoryEnabled:   false,
 				ChunkSize:       40,
 				MaxChunks:       10,
+				LLMTemperature:  0.3,
+				LLMTopP:         0.8,
+				LLMMaxTokens:    1100,
 			},
 		},
 		nil,
@@ -226,6 +229,15 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 		}
 		if input.Memory.HasContext() {
 			t.Fatalf("expected no memory to be sent into prompt")
+		}
+		if input.Temperature != 0.3 {
+			t.Fatalf("expected llm temperature 0.3, got %v", input.Temperature)
+		}
+		if input.TopP != 0.8 {
+			t.Fatalf("expected llm top_p 0.8, got %v", input.TopP)
+		}
+		if input.MaxTokens != 1100 {
+			t.Fatalf("expected llm max_tokens 1100, got %d", input.MaxTokens)
 		}
 	}
 }
