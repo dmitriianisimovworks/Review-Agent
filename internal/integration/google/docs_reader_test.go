@@ -33,7 +33,7 @@ func TestExtractDocumentID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := extractDocumentID(tc.input)
+			got, err := ExtractDocumentID(tc.input)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got none")
@@ -50,4 +50,3 @@ func TestExtractDocumentID(t *testing.T) {
 		})
 	}
 }
-

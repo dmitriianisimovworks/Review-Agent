@@ -37,7 +37,7 @@ func NewServiceAccountReader(ctx context.Context, credentialsFile string) (*Serv
 }
 
 func (r *ServiceAccountReader) Read(ctx context.Context, documentURL string) (Document, error) {
-	documentID, err := extractDocumentID(documentURL)
+	documentID, err := ExtractDocumentID(documentURL)
 	if err != nil {
 		return Document{}, err
 	}
@@ -75,7 +75,7 @@ func (r *ServiceAccountReader) Read(ctx context.Context, documentURL string) (Do
 	}, nil
 }
 
-func extractDocumentID(documentURL string) (string, error) {
+func ExtractDocumentID(documentURL string) (string, error) {
 	trimmed := strings.TrimSpace(documentURL)
 	if trimmed == "" {
 		return "", errors.New("google doc url is required")

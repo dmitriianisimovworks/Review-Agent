@@ -62,6 +62,9 @@ func (s *CommentService) PublishComments(ctx context.Context, input PublishComme
 	if err != nil {
 		return PublishCommentsResult{}, apperrors.Wrap(apperrors.KindNotFound, "analysis not found", err)
 	}
+	if analysis.Status != domain.AnalysisStatusCompleted {
+		return PublishCommentsResult{}, apperrors.New(apperrors.KindInvalidArgument, "comments can be published only for completed analyses")
+	}
 
 	document, err := s.documentRepo.GetByID(ctx, analysis.DocumentID)
 	if err != nil {

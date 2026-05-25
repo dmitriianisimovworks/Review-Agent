@@ -27,6 +27,19 @@ func (r *DocumentRepository) Save(ctx context.Context, document domain.Document)
 	return err
 }
 
+func (r *DocumentRepository) Update(ctx context.Context, document domain.Document) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE documents
+		SET name = $2,
+		    external_id = $3,
+		    review_key = $4,
+		    raw_content = $5,
+		    normalized_content = $6
+		WHERE id = $1
+	`, document.ID, document.Name, nullString(document.ExternalID), document.ReviewKey, document.RawContent, document.NormalizedContent)
+	return err
+}
+
 func (r *DocumentRepository) GetByID(ctx context.Context, id string) (domain.Document, error) {
 	var document domain.Document
 	err := r.pool.QueryRow(ctx, `

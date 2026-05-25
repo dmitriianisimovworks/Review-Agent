@@ -29,6 +29,13 @@ type stubDocumentRepo struct {
 
 func (r *stubDocumentRepo) Save(_ context.Context, document domain.Document) error {
 	r.saved = document
+	r.got = document
+	return nil
+}
+
+func (r *stubDocumentRepo) Update(_ context.Context, document domain.Document) error {
+	r.saved = document
+	r.got = document
 	return nil
 }
 
@@ -47,6 +54,28 @@ type stubAnalysisRepo struct {
 
 func (r *stubAnalysisRepo) Save(_ context.Context, analysis domain.Analysis) error {
 	r.saved = analysis
+	r.got = analysis
+	r.saveCalls++
+	return nil
+}
+
+func (r *stubAnalysisRepo) Create(_ context.Context, analysis domain.Analysis) error {
+	r.saved = analysis
+	r.got = analysis
+	r.saveCalls++
+	return nil
+}
+
+func (r *stubAnalysisRepo) MarkStatus(_ context.Context, _ string, status domain.AnalysisStatus, errorMessage string) error {
+	r.got.Status = status
+	r.got.ErrorMessage = errorMessage
+	r.saved = r.got
+	return nil
+}
+
+func (r *stubAnalysisRepo) Complete(_ context.Context, analysis domain.Analysis) error {
+	r.saved = analysis
+	r.got = analysis
 	r.saveCalls++
 	return nil
 }
@@ -68,6 +97,19 @@ func (stubAnalysisCache) Get(context.Context, string) (domain.Analysis, bool, er
 	return domain.Analysis{}, false, nil
 }
 func (stubAnalysisCache) Delete(context.Context, string) error { return nil }
+
+type stubJobRunner struct {
+	enqueued []string
+}
+
+func (r *stubJobRunner) EnqueueAnalysis(_ context.Context, analysisID string) error {
+	r.enqueued = append(r.enqueued, analysisID)
+	return nil
+}
+
+func (r *stubJobRunner) Run(context.Context, func(context.Context, string) error) error {
+	return nil
+}
 
 type recordingLLMClient struct {
 	inputs []llm.AnalyzeInput
@@ -149,6 +191,7 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 				MaxChunks:       10,
 			},
 		},
+		nil,
 	)
 
 	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
@@ -180,6 +223,59 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 		if input.Memory.HasContext() {
 			t.Fatalf("expected no memory to be sent into prompt")
 		}
+	}
+}
+
+func TestAnalysisServiceQueuesAnalysisWhenRunnerConfigured(t *testing.T) {
+	documentRepo := &stubDocumentRepo{}
+	analysisRepo := &stubAnalysisRepo{}
+	llmClient := &recordingLLMClient{}
+	jobRunner := &stubJobRunner{}
+
+	service := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		llmClient,
+		nil,
+		nil,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{
+			settings: reviewconfig.Settings{
+				Roles:           domain.DefaultReviewerRoles(),
+				InlineComments:  true,
+				SummaryComments: true,
+				MemoryEnabled:   true,
+				ChunkSize:       5000,
+				MaxChunks:       10,
+			},
+		},
+		jobRunner,
+	)
+
+	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
+		Name:    "spec.md",
+		Source:  domain.DocumentSourceUpload,
+		Content: "Queued analysis payload.",
+		Mode:    domain.AnalysisModeFullReview,
+	})
+	if err != nil {
+		t.Fatalf("StartAnalysis() error = %v", err)
+	}
+
+	if analysis.Status != domain.AnalysisStatusQueued {
+		t.Fatalf("expected queued status, got %s", analysis.Status)
+	}
+	if len(jobRunner.enqueued) != 1 || jobRunner.enqueued[0] != analysis.ID {
+		t.Fatalf("expected one enqueued analysis id, got %+v", jobRunner.enqueued)
+	}
+	if len(llmClient.inputs) != 0 {
+		t.Fatalf("expected no llm calls during enqueue, got %d", len(llmClient.inputs))
+	}
+	if analysisRepo.saved.Status != domain.AnalysisStatusQueued {
+		t.Fatalf("expected queued analysis to be persisted")
 	}
 }
 
@@ -278,6 +374,7 @@ func TestAnalysisServiceBlocksMergeWhenCriticalPolicyEnabled(t *testing.T) {
 				MaxChunks:          10,
 			},
 		},
+		nil,
 	)
 
 	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
@@ -332,6 +429,7 @@ func TestAnalysisServicePersistsHistoryAwareMemorySnapshot(t *testing.T) {
 				MaxChunks:          10,
 			},
 		},
+		nil,
 	)
 
 	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{

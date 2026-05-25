@@ -22,6 +22,82 @@ func NewAnalysisRepository(pool *pgxpool.Pool) *AnalysisRepository {
 	return &AnalysisRepository{pool: pool}
 }
 
+func (r *AnalysisRepository) Create(ctx context.Context, analysis domain.Analysis) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO analysis_runs (
+			id, document_id, mode, status, summary, llm_provider, llm_model, chunk_count, merge_blocked, blocking_findings_count, suppressed_findings_count, error_message, created_at, completed_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+	`, analysis.ID, analysis.DocumentID, analysis.Mode, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.ErrorMessage), analysis.CreatedAt, analysis.CompletedAt)
+	if err != nil {
+		return fmt.Errorf("insert analysis run: %w", err)
+	}
+	return nil
+}
+
+func (r *AnalysisRepository) MarkStatus(ctx context.Context, id string, status domain.AnalysisStatus, errorMessage string) error {
+	var completedAt any
+	if status == domain.AnalysisStatusCompleted || status == domain.AnalysisStatusFailed {
+		completedAt = time.Now().UTC()
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		UPDATE analysis_runs
+		SET status = $2,
+		    error_message = $3,
+		    completed_at = $4
+		WHERE id = $1
+	`, id, status, nullString(errorMessage), completedAt)
+	if err != nil {
+		return fmt.Errorf("update analysis status: %w", err)
+	}
+	return nil
+}
+
+func (r *AnalysisRepository) Complete(ctx context.Context, analysis domain.Analysis) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE analysis_runs
+		SET status = $2,
+		    summary = $3,
+		    llm_provider = $4,
+		    llm_model = $5,
+		    chunk_count = $6,
+		    merge_blocked = $7,
+		    blocking_findings_count = $8,
+		    suppressed_findings_count = $9,
+		    error_message = $10,
+		    completed_at = $11
+		WHERE id = $1
+	`, analysis.ID, analysis.Status, analysis.Summary, analysis.Provider, analysis.Model, analysis.ChunkCount, analysis.MergeBlocked, analysis.BlockingFindings, analysis.SuppressedFindings, nullString(analysis.ErrorMessage), analysis.CompletedAt); err != nil {
+		return fmt.Errorf("update analysis run: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM analysis_chunks WHERE analysis_run_id = $1`, analysis.ID); err != nil {
+		return fmt.Errorf("delete existing chunks: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM findings WHERE analysis_run_id = $1`, analysis.ID); err != nil {
+		return fmt.Errorf("delete existing findings: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM analysis_artifacts WHERE analysis_run_id = $1`, analysis.ID); err != nil {
+		return fmt.Errorf("delete existing artifacts: %w", err)
+	}
+
+	if err := r.insertAnalysisPayload(ctx, tx, analysis); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+
+	return nil
+}
+
 func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -37,6 +113,18 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 		return fmt.Errorf("insert analysis run: %w", err)
 	}
 
+	if err := r.insertAnalysisPayload(ctx, tx, analysis); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+
+	return nil
+}
+
+func (r *AnalysisRepository) insertAnalysisPayload(ctx context.Context, tx pgx.Tx, analysis domain.Analysis) error {
 	for _, chunk := range analysis.Chunks {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO analysis_chunks (
@@ -128,11 +216,6 @@ func (r *AnalysisRepository) Save(ctx context.Context, analysis domain.Analysis)
 			return fmt.Errorf("insert structure artifact: %w", err)
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
-	}
-
 	return nil
 }
 
@@ -216,7 +299,7 @@ func (r *AnalysisRepository) ListByReviewKey(ctx context.Context, reviewKey stri
 		       COALESCE(ar.error_message, ''), ar.created_at, ar.completed_at
 		FROM analysis_runs ar
 		JOIN documents d ON d.id = ar.document_id
-		WHERE d.review_key = $1
+		WHERE d.review_key = $1 AND ar.status = 'completed'
 		ORDER BY ar.created_at DESC
 		LIMIT $2
 	`, reviewKey, limit)

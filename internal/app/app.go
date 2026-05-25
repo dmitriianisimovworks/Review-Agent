@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +17,7 @@ import (
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
+	"technical-specification-review-agent/internal/jobs"
 	platformpostgres "technical-specification-review-agent/internal/platform/postgres"
 	platformredis "technical-specification-review-agent/internal/platform/redis"
 	"technical-specification-review-agent/internal/prompt"
@@ -25,9 +28,12 @@ import (
 )
 
 type App struct {
-	server      *http.Server
-	pgPool      *pgxpool.Pool
-	redisClient *goredis.Client
+	server       *http.Server
+	pgPool       *pgxpool.Pool
+	redisClient  *goredis.Client
+	workerRun    func(context.Context) error
+	workerCancel context.CancelFunc
+	workerWG     sync.WaitGroup
 }
 
 type analysisFacade struct {
@@ -75,6 +81,7 @@ func New() (*App, error) {
 	analysisRepo := postgresrepo.NewAnalysisRepository(pgPool)
 	googleOAuthRepo := postgresrepo.NewGoogleOAuthConnectionRepository(pgPool)
 	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
+	jobRunner := jobs.NewRedisRunner(redisClient)
 	promptBuilder := prompt.NewDefaultBuilder()
 	commentFormatter := comment.NewDefaultFormatter()
 	reviewSettings := reviewconfig.NewLoader(reviewconfig.DefaultPath, reviewconfig.Defaults{
@@ -107,6 +114,7 @@ func New() (*App, error) {
 		cfg.LLM.Model,
 		cfg.Document,
 		reviewSettings,
+		jobRunner,
 	)
 	commentService := service.NewCommentService(
 		documentRepo,
@@ -138,10 +146,30 @@ func New() (*App, error) {
 		server:      server,
 		pgPool:      pgPool,
 		redisClient: redisClient,
+		workerRun: func(ctx context.Context) error {
+			return jobRunner.Run(ctx, func(jobCtx context.Context, analysisID string) error {
+				if err := analysisService.ProcessAnalysis(jobCtx, analysisID); err != nil {
+					log.Printf("analysis worker: analysis_id=%q err=%v", analysisID, err)
+				}
+				return nil
+			})
+		},
 	}, nil
 }
 
 func (a *App) Run() error {
+	if a.workerRun != nil {
+		workerCtx, cancel := context.WithCancel(context.Background())
+		a.workerCancel = cancel
+		a.workerWG.Add(1)
+		go func() {
+			defer a.workerWG.Done()
+			if err := a.workerRun(workerCtx); err != nil {
+				log.Printf("analysis worker stopped with error: %v", err)
+			}
+		}()
+	}
+
 	err := a.server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -154,6 +182,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if err := a.server.Shutdown(ctx); err != nil {
 		shutdownErr = err
 	}
+	if a.workerCancel != nil {
+		a.workerCancel()
+	}
+	a.workerWG.Wait()
 	if a.redisClient != nil {
 		_ = a.redisClient.Close()
 	}

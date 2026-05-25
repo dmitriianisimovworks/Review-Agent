@@ -14,6 +14,7 @@ import (
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
+	"technical-specification-review-agent/internal/jobs"
 	"technical-specification-review-agent/internal/parser"
 	"technical-specification-review-agent/internal/repository"
 	"technical-specification-review-agent/internal/reviewconfig"
@@ -30,6 +31,7 @@ type AnalysisService struct {
 	llmModel         string
 	documentConfig   config.DocumentConfig
 	reviewConfig     reviewconfig.Provider
+	jobRunner        jobs.Runner
 }
 
 const maxFindingsPerRole = 5
@@ -54,6 +56,7 @@ func NewAnalysisService(
 	llmModel string,
 	documentConfig config.DocumentConfig,
 	reviewConfig reviewconfig.Provider,
+	jobRunner jobs.Runner,
 ) *AnalysisService {
 	return &AnalysisService{
 		documentRepo:     documentRepo,
@@ -66,10 +69,18 @@ func NewAnalysisService(
 		llmModel:         llmModel,
 		documentConfig:   documentConfig,
 		reviewConfig:     reviewConfig,
+		jobRunner:        jobRunner,
 	}
 }
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
+	if s.jobRunner != nil {
+		return s.startAnalysisAsync(ctx, input)
+	}
+	return s.startAnalysisSync(ctx, input)
+}
+
+func (s *AnalysisService) startAnalysisSync(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
 	now := time.Now().UTC()
 	source := input.Source
 	if source == "" {
@@ -84,107 +95,26 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 		return domain.Analysis{}, err
 	}
 
-	content := strings.TrimSpace(input.Content)
-	documentName := strings.TrimSpace(input.Name)
-	externalID := ""
-	reviewKey := strings.TrimSpace(input.ContextKey)
-	var structuredDoc google.Document
-
-	if source == domain.DocumentSourceGoogleDocs {
-		if s.documentReader == nil {
-			return domain.Analysis{}, apperrors.New(apperrors.KindInternal, "google docs reader is not configured")
-		}
-		if strings.TrimSpace(input.GoogleDocURL) == "" {
-			return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "google_doc_url is required for google_docs source")
-		}
-
-		doc, err := s.documentReader.Read(ctx, input.GoogleDocURL)
-		if err != nil {
-			return domain.Analysis{}, apperrors.Wrap(apperrors.KindDependency, "failed to read google document", err)
-		}
-		structuredDoc = doc
-		content = doc.Content
-		externalID = doc.ExternalID
-		if documentName == "" {
-			documentName = doc.Title
-		}
-	}
-
-	if content == "" {
-		return domain.Analysis{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
-	}
-
-	reviewKey = deriveReviewKey(source, reviewKey, externalID, documentName)
-	var previousAnalyses []domain.Analysis
-	if settings.MemoryEnabled {
-		previousAnalyses, err = s.analysisRepo.ListByReviewKey(ctx, reviewKey, reviewMemoryRunLimit)
-		if err != nil {
-			return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to load review history", err)
-		}
-	}
-	promptMemory := buildReviewMemory(reviewKey, previousAnalyses)
-	if !settings.MemoryEnabled {
-		promptMemory = domain.ReviewMemory{}
-	}
-
-	document := domain.Document{
-		ID:         fmt.Sprintf("doc_%d", now.UnixNano()),
-		Name:       documentName,
-		Source:     source,
-		ExternalID: externalID,
-		ReviewKey:  reviewKey,
-		RawContent: content,
-		Sections:   toDomainSections(structuredDoc.Sections),
-		Blocks:     toDomainBlocks(structuredDoc.Blocks),
-		CreatedAt:  now,
-	}
-
-	documentParser := parser.NewChunkingParser(config.DocumentConfig{
-		ChunkSize: settings.ChunkSize,
-		MaxChunks: settings.MaxChunks,
-	})
-	parsed, err := documentParser.Parse(ctx, parser.ParseInput{
-		Content:  document.RawContent,
-		Sections: document.Sections,
-	})
+	document, structuredDoc, err := s.buildDocumentFromInput(ctx, input, now)
 	if err != nil {
-		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
+		return domain.Analysis{}, err
 	}
-	document.NormalizedContent = parsed.Text
-
+	document, parsed, promptMemory, err := s.prepareAnalysisDocument(ctx, document, structuredDoc, mode, settings)
+	if err != nil {
+		return domain.Analysis{}, err
+	}
 	if err := s.documentRepo.Save(ctx, document); err != nil {
 		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to store document", err)
 	}
 
-	aggregatedFindings := make([]domain.Finding, 0)
-	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, now, promptMemory, settings.Roles)
-	if err != nil {
-		return domain.Analysis{}, err
+	analysis := s.buildCompletedAnalysis(ctx, document, parsed, promptMemory, mode, now, settings)
+	if analysis.ErrorMessage != "" {
+		return domain.Analysis{}, apperrors.New(apperrors.KindDependency, analysis.ErrorMessage)
 	}
-	aggregatedFindings = findings
-	aggregatedFindings = deduplicateFindings(aggregatedFindings)
-
-	completedAt := time.Now().UTC()
-	mergeBlocked, blockingFindings := evaluateMergePolicy(aggregatedFindings, settings)
-	analysis := domain.Analysis{
-		ID:                 fmt.Sprintf("analysis_%d", completedAt.UnixNano()),
-		DocumentID:         document.ID,
-		Mode:               mode,
-		Status:             domain.AnalysisStatusCompleted,
-		Provider:           s.llmProvider,
-		Model:              s.llmModel,
-		ChunkCount:         len(parsed.Chunks),
-		MergeBlocked:       mergeBlocked,
-		BlockingFindings:   blockingFindings,
-		SuppressedFindings: suppressedFindings,
-		Findings:           aggregatedFindings,
-		Chunks:             chunks,
-		Summary:            buildSummary(aggregatedFindings, len(parsed.Chunks)),
-		Memory:             promptMemory,
-		DocumentSections:   parsed.Sections,
-		CreatedAt:          now,
-		CompletedAt:        &completedAt,
+	if analysis.CompletedAt == nil {
+		return domain.Analysis{}, apperrors.New(apperrors.KindInternal, "analysis completed_at is missing")
 	}
+	analysis.ID = fmt.Sprintf("analysis_%d", analysis.CompletedAt.UnixNano())
 	for i := range analysis.Chunks {
 		analysis.Chunks[i].AnalysisID = analysis.ID
 	}
@@ -197,6 +127,117 @@ func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysis
 	}
 
 	return analysis, nil
+}
+
+func (s *AnalysisService) startAnalysisAsync(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
+	now := time.Now().UTC()
+	source := input.Source
+	if source == "" {
+		source = domain.DocumentSourceUpload
+	}
+	mode := input.Mode
+	if mode == "" {
+		mode = domain.AnalysisModeFullReview
+	}
+
+	document, _, err := s.buildDocumentFromInput(ctx, input, now)
+	if err != nil {
+		return domain.Analysis{}, err
+	}
+	if err := s.documentRepo.Save(ctx, document); err != nil {
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to store document", err)
+	}
+
+	analysis := domain.Analysis{
+		ID:         fmt.Sprintf("analysis_%d", now.UnixNano()),
+		DocumentID: document.ID,
+		Mode:       mode,
+		Status:     domain.AnalysisStatusQueued,
+		Provider:   s.llmProvider,
+		Model:      s.llmModel,
+		Summary:    "",
+		CreatedAt:  now,
+	}
+	if err := s.analysisRepo.Create(ctx, analysis); err != nil {
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindInternal, "failed to create queued analysis", err)
+	}
+	if s.analysisCache != nil {
+		_ = s.analysisCache.Set(ctx, analysis)
+	}
+	if err := s.jobRunner.EnqueueAnalysis(ctx, analysis.ID); err != nil {
+		return domain.Analysis{}, apperrors.Wrap(apperrors.KindDependency, "failed to enqueue analysis job", err)
+	}
+	return analysis, nil
+}
+
+func (s *AnalysisService) ProcessAnalysis(ctx context.Context, analysisID string) error {
+	analysis, err := s.analysisRepo.GetByID(ctx, analysisID)
+	if err != nil {
+		return apperrors.Wrap(apperrors.KindNotFound, "analysis not found", err)
+	}
+	if analysis.Status == domain.AnalysisStatusCompleted {
+		return nil
+	}
+
+	document, err := s.documentRepo.GetByID(ctx, analysis.DocumentID)
+	if err != nil {
+		return apperrors.Wrap(apperrors.KindNotFound, "document not found", err)
+	}
+
+	if err := s.analysisRepo.MarkStatus(ctx, analysis.ID, domain.AnalysisStatusProcessing, ""); err != nil {
+		return apperrors.Wrap(apperrors.KindInternal, "failed to mark analysis as processing", err)
+	}
+	analysis.Status = domain.AnalysisStatusProcessing
+	analysis.ErrorMessage = ""
+	if s.analysisCache != nil {
+		_ = s.analysisCache.Set(ctx, analysis)
+	}
+
+	settings, err := s.loadReviewConfig()
+	if err != nil {
+		_ = s.failAnalysis(ctx, analysis, err)
+		return err
+	}
+
+	structuredDoc, err := s.loadStructuredDocument(ctx, document)
+	if err != nil {
+		_ = s.failAnalysis(ctx, analysis, err)
+		return err
+	}
+
+	document, parsed, promptMemory, err := s.prepareAnalysisDocument(ctx, document, structuredDoc, analysis.Mode, settings)
+	if err != nil {
+		_ = s.failAnalysis(ctx, analysis, err)
+		return err
+	}
+	if err := s.documentRepo.Update(ctx, document); err != nil {
+		wrapped := apperrors.Wrap(apperrors.KindInternal, "failed to update document", err)
+		_ = s.failAnalysis(ctx, analysis, wrapped)
+		return wrapped
+	}
+
+	completed := s.buildCompletedAnalysis(ctx, document, parsed, promptMemory, analysis.Mode, analysis.CreatedAt, settings)
+	completed.ID = analysis.ID
+	completed.DocumentID = analysis.DocumentID
+	completed.CreatedAt = analysis.CreatedAt
+	if completed.ErrorMessage != "" {
+		err := apperrors.New(apperrors.KindDependency, completed.ErrorMessage)
+		_ = s.failAnalysis(ctx, analysis, err)
+		return err
+	}
+	for i := range completed.Chunks {
+		completed.Chunks[i].AnalysisID = completed.ID
+	}
+
+	if err := s.analysisRepo.Complete(ctx, completed); err != nil {
+		wrapped := apperrors.Wrap(apperrors.KindInternal, "failed to store analysis", err)
+		_ = s.failAnalysis(ctx, analysis, wrapped)
+		return wrapped
+	}
+	if s.analysisCache != nil {
+		_ = s.analysisCache.Set(ctx, completed)
+	}
+	return nil
 }
 
 func (s *AnalysisService) analyzeChunksByRoles(
@@ -294,6 +335,188 @@ func (s *AnalysisService) analyzeChunksByRoles(
 
 	filtered, suppressedCount := filterFindingsByMode(filterRoleFindings(findings), memory, mode)
 	return chunks, filtered, suppressedCount, nil
+}
+
+func (s *AnalysisService) buildDocumentFromInput(ctx context.Context, input StartAnalysisInput, now time.Time) (domain.Document, google.Document, error) {
+	source := input.Source
+	if source == "" {
+		source = domain.DocumentSourceUpload
+	}
+
+	content := strings.TrimSpace(input.Content)
+	documentName := strings.TrimSpace(input.Name)
+	externalID := ""
+	reviewKey := strings.TrimSpace(input.ContextKey)
+	var structuredDoc google.Document
+
+	switch source {
+	case domain.DocumentSourceGoogleDocs:
+		if strings.TrimSpace(input.GoogleDocURL) == "" {
+			return domain.Document{}, google.Document{}, apperrors.New(apperrors.KindInvalidArgument, "google_doc_url is required for google_docs source")
+		}
+		documentID, err := google.ExtractDocumentID(input.GoogleDocURL)
+		if err != nil {
+			return domain.Document{}, google.Document{}, apperrors.Wrap(apperrors.KindInvalidArgument, "invalid google_doc_url", err)
+		}
+		externalID = documentID
+		if documentName == "" {
+			documentName = "google_doc_" + documentID
+		}
+		if s.jobRunner == nil {
+			if s.documentReader == nil {
+				return domain.Document{}, google.Document{}, apperrors.New(apperrors.KindInternal, "google docs reader is not configured")
+			}
+			doc, err := s.documentReader.Read(ctx, input.GoogleDocURL)
+			if err != nil {
+				return domain.Document{}, google.Document{}, apperrors.Wrap(apperrors.KindDependency, "failed to read google document", err)
+			}
+			structuredDoc = doc
+			content = doc.Content
+			externalID = doc.ExternalID
+			if strings.TrimSpace(doc.Title) != "" {
+				documentName = doc.Title
+			}
+		}
+	case domain.DocumentSourceUpload:
+		if content == "" {
+			return domain.Document{}, google.Document{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
+		}
+	default:
+		if content == "" {
+			return domain.Document{}, google.Document{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
+		}
+	}
+
+	reviewKey = deriveReviewKey(source, reviewKey, externalID, documentName)
+	return domain.Document{
+		ID:                fmt.Sprintf("doc_%d", now.UnixNano()),
+		Name:              documentName,
+		Source:            source,
+		ExternalID:        externalID,
+		ReviewKey:         reviewKey,
+		RawContent:        content,
+		NormalizedContent: content,
+		Sections:          toDomainSections(structuredDoc.Sections),
+		Blocks:            toDomainBlocks(structuredDoc.Blocks),
+		CreatedAt:         now,
+	}, structuredDoc, nil
+}
+
+func (s *AnalysisService) loadStructuredDocument(ctx context.Context, document domain.Document) (google.Document, error) {
+	if document.Source != domain.DocumentSourceGoogleDocs {
+		return google.Document{
+			ExternalID: document.ExternalID,
+			Title:      document.Name,
+			Content:    document.RawContent,
+		}, nil
+	}
+	if s.documentReader == nil {
+		return google.Document{}, apperrors.New(apperrors.KindInternal, "google docs reader is not configured")
+	}
+	if strings.TrimSpace(document.ExternalID) == "" {
+		return google.Document{}, apperrors.New(apperrors.KindInvalidArgument, "google document external id is missing")
+	}
+	return s.documentReader.Read(ctx, document.ExternalID)
+}
+
+func (s *AnalysisService) prepareAnalysisDocument(
+	ctx context.Context,
+	document domain.Document,
+	structuredDoc google.Document,
+	mode domain.AnalysisMode,
+	settings reviewconfig.Settings,
+) (domain.Document, parser.ParsedDocument, domain.ReviewMemory, error) {
+	content := strings.TrimSpace(document.RawContent)
+	if strings.TrimSpace(structuredDoc.Content) != "" {
+		content = structuredDoc.Content
+		document.RawContent = content
+		document.ExternalID = structuredDoc.ExternalID
+		if strings.TrimSpace(structuredDoc.Title) != "" {
+			document.Name = structuredDoc.Title
+		}
+		document.Sections = toDomainSections(structuredDoc.Sections)
+		document.Blocks = toDomainBlocks(structuredDoc.Blocks)
+	}
+	if content == "" {
+		return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, apperrors.New(apperrors.KindInvalidArgument, "document content is required")
+	}
+
+	var previousAnalyses []domain.Analysis
+	var err error
+	if settings.MemoryEnabled {
+		previousAnalyses, err = s.analysisRepo.ListByReviewKey(ctx, document.ReviewKey, reviewMemoryRunLimit)
+		if err != nil {
+			return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, apperrors.Wrap(apperrors.KindInternal, "failed to load review history", err)
+		}
+	}
+	promptMemory := buildReviewMemory(document.ReviewKey, previousAnalyses)
+	if !settings.MemoryEnabled {
+		promptMemory = domain.ReviewMemory{}
+	}
+
+	documentParser := parser.NewChunkingParser(config.DocumentConfig{
+		ChunkSize: settings.ChunkSize,
+		MaxChunks: settings.MaxChunks,
+	})
+	parsed, err := documentParser.Parse(ctx, parser.ParseInput{
+		Content:  content,
+		Sections: document.Sections,
+	})
+	if err != nil {
+		return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
+	}
+	document.NormalizedContent = parsed.Text
+	return document, parsed, promptMemory, nil
+}
+
+func (s *AnalysisService) buildCompletedAnalysis(
+	ctx context.Context,
+	document domain.Document,
+	parsed parser.ParsedDocument,
+	promptMemory domain.ReviewMemory,
+	mode domain.AnalysisMode,
+	createdAt time.Time,
+	settings reviewconfig.Settings,
+) domain.Analysis {
+	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, createdAt, promptMemory, settings.Roles)
+	if err != nil {
+		return domain.Analysis{ErrorMessage: err.Error()}
+	}
+
+	aggregatedFindings := deduplicateFindings(findings)
+	completedAt := time.Now().UTC()
+	mergeBlocked, blockingFindings := evaluateMergePolicy(aggregatedFindings, settings)
+	return domain.Analysis{
+		DocumentID:         document.ID,
+		Mode:               mode,
+		Status:             domain.AnalysisStatusCompleted,
+		Provider:           s.llmProvider,
+		Model:              s.llmModel,
+		ChunkCount:         len(parsed.Chunks),
+		MergeBlocked:       mergeBlocked,
+		BlockingFindings:   blockingFindings,
+		SuppressedFindings: suppressedFindings,
+		Findings:           aggregatedFindings,
+		Chunks:             chunks,
+		Summary:            buildSummary(aggregatedFindings, len(parsed.Chunks)),
+		Memory:             promptMemory,
+		DocumentSections:   parsed.Sections,
+		CreatedAt:          createdAt,
+		CompletedAt:        &completedAt,
+	}
+}
+
+func (s *AnalysisService) failAnalysis(ctx context.Context, analysis domain.Analysis, err error) error {
+	message := err.Error()
+	_ = s.analysisRepo.MarkStatus(ctx, analysis.ID, domain.AnalysisStatusFailed, message)
+	analysis.Status = domain.AnalysisStatusFailed
+	analysis.ErrorMessage = message
+	now := time.Now().UTC()
+	analysis.CompletedAt = &now
+	if s.analysisCache != nil {
+		_ = s.analysisCache.Set(ctx, analysis)
+	}
+	return err
 }
 
 func annotateChunkFindings(findings []domain.Finding, descriptor parser.ParsedChunk, chunkIndex int) {

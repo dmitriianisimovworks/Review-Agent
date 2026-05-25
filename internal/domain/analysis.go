@@ -8,6 +8,7 @@ const (
 	AnalysisStatusQueued     AnalysisStatus = "queued"
 	AnalysisStatusProcessing AnalysisStatus = "processing"
 	AnalysisStatusCompleted  AnalysisStatus = "completed"
+	AnalysisStatusFailed     AnalysisStatus = "failed"
 )
 
 type Severity string
