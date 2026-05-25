@@ -70,10 +70,8 @@ func (stubAnalysisCache) Get(context.Context, string) (domain.Analysis, bool, er
 func (stubAnalysisCache) Delete(context.Context, string) error { return nil }
 
 type recordingLLMClient struct {
-	inputs            []llm.AnalyzeInput
-	sectionPairInputs []llm.AnalyzeSectionPairInput
-	result            llm.ChunkAnalysisResult
-	sectionPairResult llm.ChunkAnalysisResult
+	inputs []llm.AnalyzeInput
+	result llm.ChunkAnalysisResult
 }
 
 func (c *recordingLLMClient) AnalyzeChunk(_ context.Context, input llm.AnalyzeInput) (llm.ChunkAnalysisResult, error) {
@@ -84,20 +82,6 @@ func (c *recordingLLMClient) AnalyzeChunk(_ context.Context, input llm.AnalyzeIn
 	return llm.ChunkAnalysisResult{
 		Findings:      nil,
 		PromptVersion: "test",
-		SystemPrompt:  "system",
-		UserPrompt:    "user",
-		RawResponse:   `{"findings":[]}`,
-	}, nil
-}
-
-func (c *recordingLLMClient) AnalyzeSectionPair(_ context.Context, input llm.AnalyzeSectionPairInput) (llm.ChunkAnalysisResult, error) {
-	c.sectionPairInputs = append(c.sectionPairInputs, input)
-	if c.sectionPairResult.RawResponse != "" || len(c.sectionPairResult.Findings) > 0 {
-		return c.sectionPairResult, nil
-	}
-	return llm.ChunkAnalysisResult{
-		Findings:      nil,
-		PromptVersion: "test-cross",
 		SystemPrompt:  "system",
 		UserPrompt:    "user",
 		RawResponse:   `{"findings":[]}`,
@@ -157,13 +141,12 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
-				CrossSectionContradictions: false,
-				InlineComments:             true,
-				SummaryComments:            true,
-				MemoryEnabled:              false,
-				ChunkSize:                  40,
-				MaxChunks:                  10,
+				Roles:           []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
+				InlineComments:  true,
+				SummaryComments: true,
+				MemoryEnabled:   false,
+				ChunkSize:       40,
+				MaxChunks:       10,
 			},
 		},
 	)
@@ -227,9 +210,8 @@ func TestCommentServiceUsesReviewConfigDefaultPublishMode(t *testing.T) {
 		publisher,
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				CrossSectionContradictions: false,
-				InlineComments:             false,
-				SummaryComments:            true,
+				InlineComments:  false,
+				SummaryComments: true,
 			},
 		},
 	)
@@ -287,14 +269,13 @@ func TestAnalysisServiceBlocksMergeWhenCriticalPolicyEnabled(t *testing.T) {
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleTechLead},
-				CrossSectionContradictions: false,
-				InlineComments:             true,
-				SummaryComments:            true,
-				MemoryEnabled:              true,
-				CriticalBlockMerge:         true,
-				ChunkSize:                  5000,
-				MaxChunks:                  10,
+				Roles:              []domain.ReviewerRole{domain.ReviewerRoleTechLead},
+				InlineComments:     true,
+				SummaryComments:    true,
+				MemoryEnabled:      true,
+				CriticalBlockMerge: true,
+				ChunkSize:          5000,
+				MaxChunks:          10,
 			},
 		},
 	)
@@ -320,15 +301,12 @@ func TestAnalysisServiceBlocksMergeWhenCriticalPolicyEnabled(t *testing.T) {
 	}
 }
 
-func TestAnalysisServicePersistsStructuredMemorySnapshot(t *testing.T) {
+func TestAnalysisServicePersistsHistoryAwareMemorySnapshot(t *testing.T) {
 	documentRepo := &stubDocumentRepo{}
 	analysisRepo := &stubAnalysisRepo{
 		prior: []domain.Analysis{{
 			ID:      "previous",
 			Summary: "previous summary",
-			Memory: domain.ReviewMemory{
-				Modules: []string{"Legacy Billing"},
-			},
 		}},
 	}
 	llmClient := &recordingLLMClient{}
@@ -345,14 +323,13 @@ func TestAnalysisServicePersistsStructuredMemorySnapshot(t *testing.T) {
 		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
 		stubReviewConfigProvider{
 			settings: reviewconfig.Settings{
-				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
-				CrossSectionContradictions: false,
-				InlineComments:             true,
-				SummaryComments:            true,
-				MemoryEnabled:              true,
-				CriticalBlockMerge:         true,
-				ChunkSize:                  5000,
-				MaxChunks:                  10,
+				Roles:              []domain.ReviewerRole{domain.ReviewerRoleSeniorBackendEngineer},
+				InlineComments:     true,
+				SummaryComments:    true,
+				MemoryEnabled:      true,
+				CriticalBlockMerge: true,
+				ChunkSize:          5000,
+				MaxChunks:          10,
 			},
 		},
 	)
@@ -360,192 +337,20 @@ func TestAnalysisServicePersistsStructuredMemorySnapshot(t *testing.T) {
 	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
 		Name:    "spec.md",
 		Source:  domain.DocumentSourceUpload,
-		Content: "1. Billing\n\nАдминистратор обновляет `invoice`.\n\n2. Integrations\n\nUser sees \"PaymentIntent\" status.",
+		Content: "Billing paragraph.\n\nIntegration paragraph.",
 		Mode:    domain.AnalysisModeFullReview,
 	})
 	if err != nil {
 		t.Fatalf("StartAnalysis() error = %v", err)
 	}
 
-	if len(analysis.Memory.Modules) == 0 {
-		t.Fatalf("expected structured modules in analysis memory")
+	if analysis.Memory.ReviewKey == "" {
+		t.Fatalf("expected review key in memory snapshot")
 	}
-	if len(analysis.Memory.Entities) == 0 {
-		t.Fatalf("expected structured entities in analysis memory")
+	if len(analysis.Memory.PriorSummaries) == 0 {
+		t.Fatalf("expected prior summaries in memory snapshot")
 	}
-	if len(analysisRepo.saved.Memory.Modules) == 0 {
-		t.Fatalf("expected persisted memory snapshot to include modules")
-	}
-}
-
-func TestAnalysisServiceAddsCrossSectionContradictionFindings(t *testing.T) {
-	documentRepo := &stubDocumentRepo{}
-	analysisRepo := &stubAnalysisRepo{}
-	llmClient := &recordingLLMClient{
-		sectionPairResult: llm.ChunkAnalysisResult{
-			Findings: []domain.Finding{{
-				Role:       string(domain.ReviewerRoleSolutionArchitect),
-				Category:   "contradiction",
-				Severity:   domain.SeverityError,
-				Problem:    "Разделы Scope и Permissions противоречат друг другу по правам удаления.",
-				WhyItIsBad: "Команда реализует несовместимые правила доступа.",
-				HowToFix:   "Выбрать единое правило удаления и синхронизировать оба раздела.",
-			}},
-			PromptVersion: "test-cross",
-			SystemPrompt:  "system",
-			UserPrompt:    "user",
-			RawResponse:   `{"findings":[{"role":"solution_architect","category":"contradiction","severity":"ERROR","problem":"Разделы Scope и Permissions противоречат друг другу по правам удаления.","why_it_is_bad":"Команда реализует несовместимые правила доступа.","how_to_fix":"Выбрать единое правило удаления и синхронизировать оба раздела."}]}`,
-		},
-	}
-	reader := &stubDocumentReader{
-		document: google.Document{
-			Title:      "spec",
-			ExternalID: "doc-1",
-			Content:    "ignored",
-			Sections: []google.Section{
-				{ID: "scope", Title: "Scope", Level: 1, Content: "Пользователь может удалять объект."},
-				{ID: "permissions", Title: "Permissions", Level: 1, Content: "Удалять объект может только администратор."},
-			},
-		},
-	}
-
-	service := NewAnalysisService(
-		documentRepo,
-		analysisRepo,
-		stubAnalysisCache{},
-		llmClient,
-		reader,
-		nil,
-		"openai_compatible",
-		"test-model",
-		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
-		stubReviewConfigProvider{
-			settings: reviewconfig.Settings{
-				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSolutionArchitect},
-				CrossSectionContradictions: true,
-				InlineComments:             true,
-				SummaryComments:            true,
-				MemoryEnabled:              true,
-				CriticalBlockMerge:         true,
-				ChunkSize:                  5000,
-				MaxChunks:                  10,
-			},
-		},
-	)
-
-	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
-		Source:       domain.DocumentSourceGoogleDocs,
-		GoogleDocURL: "https://docs.google.com/document/d/doc-1/edit",
-		Mode:         domain.AnalysisModeFullReview,
-	})
-	if err != nil {
-		t.Fatalf("StartAnalysis() error = %v", err)
-	}
-
-	if len(llmClient.sectionPairInputs) == 0 {
-		t.Fatalf("expected cross-section contradiction pass to run")
-	}
-	found := false
-	for _, finding := range analysis.Findings {
-		if finding.Category != "contradiction" {
-			continue
-		}
-		found = true
-		if finding.SectionTitle == "" || finding.RelatedSectionTitle == "" {
-			t.Fatalf("expected contradiction finding to include both section titles, got %+v", finding)
-		}
-	}
-	if !found {
-		t.Fatalf("expected contradiction finding in analysis result")
-	}
-}
-
-func TestAnalysisServiceSkipsCrossSectionContradictionPassWhenDisabled(t *testing.T) {
-	documentRepo := &stubDocumentRepo{}
-	analysisRepo := &stubAnalysisRepo{}
-	llmClient := &recordingLLMClient{}
-	reader := &stubDocumentReader{
-		document: google.Document{
-			Title:      "spec",
-			ExternalID: "doc-1",
-			Content:    "ignored",
-			Sections: []google.Section{
-				{ID: "scope", Title: "Scope", Level: 1, Content: "Пользователь может удалять объект."},
-				{ID: "permissions", Title: "Permissions", Level: 1, Content: "Удалять объект может только администратор."},
-			},
-		},
-	}
-
-	service := NewAnalysisService(
-		documentRepo,
-		analysisRepo,
-		stubAnalysisCache{},
-		llmClient,
-		reader,
-		nil,
-		"openai_compatible",
-		"test-model",
-		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
-		stubReviewConfigProvider{
-			settings: reviewconfig.Settings{
-				Roles:                      []domain.ReviewerRole{domain.ReviewerRoleSolutionArchitect},
-				CrossSectionContradictions: false,
-				InlineComments:             true,
-				SummaryComments:            true,
-				MemoryEnabled:              true,
-				CriticalBlockMerge:         true,
-				ChunkSize:                  5000,
-				MaxChunks:                  10,
-			},
-		},
-	)
-
-	if _, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
-		Source:       domain.DocumentSourceGoogleDocs,
-		GoogleDocURL: "https://docs.google.com/document/d/doc-1/edit",
-		Mode:         domain.AnalysisModeFullReview,
-	}); err != nil {
-		t.Fatalf("StartAnalysis() error = %v", err)
-	}
-
-	if len(llmClient.sectionPairInputs) != 0 {
-		t.Fatalf("expected cross-section contradiction pass to stay disabled")
-	}
-}
-
-func TestCompactGlobalFindingsKeepsOnlyStrongestCrossRoleDuplicate(t *testing.T) {
-	findings := []domain.Finding{
-		{
-			Role:       string(domain.ReviewerRoleTechLead),
-			Category:   "missing_requirement",
-			Severity:   domain.SeverityCritical,
-			Problem:    "Не указано поведение при одновременном захвате кейса двумя пользователями.",
-			WhyItIsBad: "Возникает race condition.",
-			HowToFix:   "Добавить атомарность захвата.",
-		},
-		{
-			Role:       string(domain.ReviewerRoleSeniorBackendEngineer),
-			Category:   "missing_requirement",
-			Severity:   domain.SeverityError,
-			Problem:    "Отсутствует описание поведения при конкурентном захвате кейса двумя пользователями.",
-			WhyItIsBad: "Возможна двойная выдача кейса.",
-			HowToFix:   "Описать optimistic locking.",
-		},
-		{
-			Role:       string(domain.ReviewerRoleQAReviewer),
-			Category:   "api_problem",
-			Severity:   domain.SeverityError,
-			Problem:    "Не описаны негативные сценарии обработки ошибок.",
-			WhyItIsBad: "Нельзя полноценно тестировать отказоустойчивость.",
-			HowToFix:   "Добавить error flows.",
-		},
-	}
-
-	compacted := compactGlobalFindings(findings)
-	if len(compacted) != 2 {
-		t.Fatalf("expected 2 findings after global compaction, got %d", len(compacted))
-	}
-	if compacted[0].Role != string(domain.ReviewerRoleTechLead) {
-		t.Fatalf("expected strongest duplicate to survive, got role %s", compacted[0].Role)
+	if len(analysisRepo.saved.Memory.PriorSummaries) == 0 {
+		t.Fatalf("expected persisted memory snapshot to include history")
 	}
 }

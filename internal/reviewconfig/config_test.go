@@ -29,9 +29,6 @@ func TestLoaderUsesDefaultsWhenConfigFileMissing(t *testing.T) {
 	if !settings.MemoryEnabled {
 		t.Fatalf("expected memory to be enabled by default")
 	}
-	if settings.CrossSectionContradictions {
-		t.Fatalf("expected cross-section contradictions to be disabled by default")
-	}
 	if settings.PublishMode() != comment.PublishModeBoth {
 		t.Fatalf("expected default publish mode both, got %s", settings.PublishMode())
 	}
@@ -47,7 +44,6 @@ func TestLoaderAppliesYamlOverrides(t *testing.T) {
 review:
   architecture: false
   backend: true
-  cross_section_contradictions: true
   frontend: false
   devops: false
   qa: true
@@ -83,9 +79,6 @@ document:
 	}
 	if settings.CriticalBlockMerge {
 		t.Fatalf("expected critical_block_merge to be disabled")
-	}
-	if !settings.CrossSectionContradictions {
-		t.Fatalf("expected cross-section contradictions to be enabled")
 	}
 	if settings.PublishMode() != comment.PublishModeSummary {
 		t.Fatalf("expected summary publish mode, got %s", settings.PublishMode())
