@@ -19,6 +19,7 @@ import (
 	"technical-specification-review-agent/internal/parser"
 	"technical-specification-review-agent/internal/repository"
 	"technical-specification-review-agent/internal/reviewconfig"
+	"technical-specification-review-agent/internal/reviewshape"
 )
 
 type AnalysisService struct {
@@ -843,9 +844,9 @@ func deduplicateFindingsByTheme(findings []domain.Finding) []domain.Finding {
 	result := make([]domain.Finding, 0, len(findings))
 	bestByKey := make(map[string]domain.Finding, len(findings))
 	for _, finding := range findings {
-		key := findingThemeBucketKey(finding) + "|" + normalizeMemoryProblem(finding.Problem)
+		key := reviewshape.IssueFingerprint(finding)
 		existing, exists := bestByKey[key]
-		if !exists || findingScore(finding) > findingScore(existing) {
+		if !exists || issueSelectionScore(finding) > issueSelectionScore(existing) {
 			bestByKey[key] = finding
 		}
 	}
@@ -920,6 +921,16 @@ func findingScore(finding domain.Finding) int {
 }
 
 func findingThemeBucketKey(finding domain.Finding) string {
+	switch reviewshape.IssueFingerprint(finding) {
+	case "refund_threshold", "partial_refund_rules":
+		return "refund"
+	case "concurrency_case_assignment":
+		return "concurrency"
+	case "audit_consistency", "audit_access_control":
+		return "audit"
+	case "queue_access_control", "roles_and_permissions":
+		return "access"
+	}
 	switch finding.Category {
 	case "technical_risk", "scalability_risk", "devops_risk":
 		return "technical"
@@ -939,36 +950,7 @@ func findingThemeBucketKey(finding domain.Finding) string {
 }
 
 func findingThemeTitle(finding domain.Finding) string {
-	switch finding.Category {
-	case "technical_risk", "scalability_risk", "devops_risk":
-		return "Технические и интеграционные риски"
-	case "security_risk":
-		return "Безопасность и доступы"
-	case "api_problem":
-		return "API и интеграционные контракты"
-	case "ux_problem", "frontend_risk":
-		return "UX и поведение интерфейса"
-	case "ambiguity":
-		return "Неоднозначные требования"
-	case "contradiction":
-		return "Противоречия"
-	default:
-		problem := strings.ToLower(finding.Problem)
-		switch {
-		case strings.Contains(problem, "роль"), strings.Contains(problem, "доступ"), strings.Contains(problem, "прав"):
-			return "Роли и права доступа"
-		case strings.Contains(problem, "sla"), strings.Contains(problem, "slo"), strings.Contains(problem, "производительност"):
-			return "SLA и нефункциональные требования"
-		case strings.Contains(problem, "audit"), strings.Contains(problem, "истори"), strings.Contains(problem, "лог"):
-			return "Audit trail и история изменений"
-		case strings.Contains(problem, "эскалац"), strings.Contains(problem, "статус"), strings.Contains(problem, "жизненн"):
-			return "Жизненный цикл кейса"
-		case strings.Contains(problem, "экспорт"), strings.Contains(problem, "отч"), strings.Contains(problem, "выгруз"):
-			return "Отчёты и выгрузки"
-		default:
-			return "Пропущенные требования"
-		}
-	}
+	return reviewshape.ThemeTitle(finding)
 }
 
 func minAnalysisInt(left, right int) int {
@@ -1071,6 +1053,14 @@ func normalizeMemoryProblem(value string) string {
 		filtered = filtered[:10]
 	}
 	return strings.Join(filtered, "_")
+}
+
+func issueSelectionScore(finding domain.Finding) int {
+	score := findingScore(finding)
+	if preferred := reviewshape.PreferredRole(reviewshape.IssueFingerprint(finding)); preferred != "" && strings.TrimSpace(finding.Role) == preferred {
+		score += 80
+	}
+	return score
 }
 
 func parsedChunkDescriptor(parsed parser.ParsedDocument, idx int) parser.ParsedChunk {

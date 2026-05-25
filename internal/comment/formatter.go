@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"technical-specification-review-agent/internal/domain"
+	"technical-specification-review-agent/internal/reviewshape"
 )
 
 type PublishMode string
@@ -454,56 +455,7 @@ func shortProblem(problem string) string {
 }
 
 func themeTitle(finding domain.Finding) string {
-	switch finding.Category {
-	case "technical_risk", "scalability_risk", "devops_risk":
-		problem := strings.ToLower(finding.Problem)
-		switch {
-		case strings.Contains(problem, "refund"), strings.Contains(problem, "возврат"), strings.Contains(problem, "invoice"), strings.Contains(problem, "платеж"):
-			return "Refund и финансовые операции"
-		case strings.Contains(problem, "конкур"), strings.Contains(problem, "одноврем"), strings.Contains(problem, "блокиров"), strings.Contains(problem, "race condition"), strings.Contains(problem, "atomic"):
-			return "Конкурентный доступ и блокировки"
-		case strings.Contains(problem, "audit"), strings.Contains(problem, "истори"), strings.Contains(problem, "лог"):
-			return "Аудит и история изменений"
-		default:
-			return "Технические и интеграционные риски"
-		}
-	case "security_risk":
-		return "Безопасность и доступы"
-	case "api_problem":
-		return "API и интеграционные контракты"
-	case "ux_problem", "frontend_risk":
-		return "UX и поведение интерфейса"
-	case "ambiguity":
-		return "Неоднозначные требования"
-	case "contradiction":
-		return "Противоречия"
-	default:
-		problem := strings.ToLower(finding.Problem)
-		switch {
-		case strings.Contains(problem, "refund"), strings.Contains(problem, "возврат"), strings.Contains(problem, "invoice"), strings.Contains(problem, "платеж"):
-			return "Refund и финансовые операции"
-		case strings.Contains(problem, "конкур"), strings.Contains(problem, "одноврем"), strings.Contains(problem, "блокиров"), strings.Contains(problem, "race condition"), strings.Contains(problem, "atomic"):
-			return "Конкурентный доступ и блокировки"
-		case strings.Contains(problem, "роль"), strings.Contains(problem, "доступ"), strings.Contains(problem, "прав"):
-			return "Роли и права доступа"
-		case strings.Contains(problem, "sla"), strings.Contains(problem, "slo"), strings.Contains(problem, "производительност"):
-			return "SLA и нефункциональные требования"
-		case strings.Contains(problem, "коммент"), strings.Contains(problem, "audit"), strings.Contains(problem, "истори"):
-			return "Аудит и история изменений"
-		case strings.Contains(problem, "эскалац"), strings.Contains(problem, "статус"), strings.Contains(problem, "жизненн"):
-			return "Жизненный цикл кейса"
-		case strings.Contains(problem, "экспорт"), strings.Contains(problem, "отч"), strings.Contains(problem, "анонимизац"):
-			return "Отчёты и выгрузки"
-		case strings.Contains(problem, "ai"), strings.Contains(problem, "рекомендац"):
-			return "AI-рекомендации и ответственность"
-		case strings.Contains(problem, "вложен"), strings.Contains(problem, "mime"), strings.Contains(problem, "файл"):
-			return "Вложения и файловая безопасность"
-		case strings.Contains(problem, "интеграц"), strings.Contains(problem, "retry"), strings.Contains(problem, "идемпотент"), strings.Contains(problem, "асинхрон"):
-			return "Технические и интеграционные риски"
-		default:
-			return "Пропущенные требования"
-		}
-	}
+	return reviewshape.ThemeTitle(finding)
 }
 
 func findingKey(finding domain.Finding) string {

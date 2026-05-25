@@ -123,6 +123,36 @@ func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
 	}
 }
 
+func TestBuildSummaryDraftsUsesUnifiedThemeGrouping(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{
+				Role:     string(domain.ReviewerRoleTechLead),
+				Severity: domain.SeverityError,
+				Category: "missing_requirement",
+				Problem:  "Не описано поведение системы при одновременной попытке нескольких пользователей взять в работу один и тот же кейс.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorBackendEngineer),
+				Severity: domain.SeverityError,
+				Category: "technical_risk",
+				Problem:  "Не описано поведение при конкурентном доступе к кейсу, когда два пользователя одновременно пытаются взять один и тот же кейс.",
+			},
+		},
+	}
+
+	drafts := buildSummaryDrafts(document, analysis)
+	content := drafts[0].Content
+	if strings.Count(content, "Конкурентный доступ и блокировки") != 1 {
+		t.Fatalf("expected unified concurrency theme once, got %q", content)
+	}
+}
+
 func TestBuildRoleDraftsCreatesSingleCommentPerRole(t *testing.T) {
 	t.Parallel()
 

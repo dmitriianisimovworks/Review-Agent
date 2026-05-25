@@ -178,6 +178,7 @@ func roleInstructions(role domain.ReviewerRole) string {
 - смотри на целостность требований и полноту бизнес-логики;
 - выделяй неясности, пропущенные ограничения, пробелы в acceptance criteria;
 - отмечай проблемы в жизненном цикле сущностей и ролевой модели;
+- не забирай себе concurrency/locking/idempotency/race-condition замечания, если это в первую очередь backend-level проблема без отдельного business-level последствия;
 - не уходи в детальные backend, devops, mobile или security замечания без явного blocker-impact.`)
 	case domain.ReviewerRoleSolutionArchitect:
 		return strings.TrimSpace(`
@@ -212,6 +213,7 @@ func roleInstructions(role domain.ReviewerRole) string {
 - ищи gaps в monitoring, alerting, секретах, конфигурации, SLA и отказоустойчивости;
 - отмечай риски частичной деградации и проблемные зависимости от внешних систем;
 - не описывай общие product или UX gaps без прямого ops/runtime impact;
+- не поднимай retry, concurrency, data consistency или idempotency как DevOps-замечание, если в тексте нет явной связи с runtime, monitoring, incident response или recovery;
 - не поднимай вопросы ролей, UX или бизнес-логики, если нет явной связи с runtime, observability, deploy или ops.`)
 	case domain.ReviewerRoleQAReviewer:
 		return strings.TrimSpace(`
@@ -226,6 +228,7 @@ func roleInstructions(role domain.ReviewerRole) string {
 - ищи insecure flows, недостаточную валидацию, утечки секретов и missing security requirements;
 - отмечай production-риски вокруг доступа, инъекций, хранения чувствительных данных и abuse scenarios;
 - не поднимай generic RBAC или lifecycle gaps до security finding без явного security-impact;
+- не трактуй business rules around refunds, thresholds, partial refunds или workflow restrictions как security finding, если в тексте нет явного fraud, abuse, unauthorized access, privilege escalation или data exposure impact;
 - если проблема не ведёт к нарушению доступа, утечке, инъекции, злоупотреблению или компрометации данных, не делай из неё security finding.`)
 	default:
 		return ""
