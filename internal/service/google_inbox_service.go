@@ -31,6 +31,7 @@ const (
 )
 
 type reviewAgentCommand struct {
+	commentID          string
 	mode               domain.AnalysisMode
 	targetSectionTitle string
 	createdAt          time.Time
@@ -38,6 +39,7 @@ type reviewAgentCommand struct {
 
 type inboxPendingAnalysis struct {
 	documentExternalID  string
+	lastBusyCommandID   string
 	startedAt           time.Time
 	progressCommentSent bool
 }
@@ -125,9 +127,6 @@ func (s *GoogleInboxService) tick(ctx context.Context) error {
 func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context, files []google.DriveFile) error {
 	for _, file := range files {
 		if s.isPendingDocument(file.ID) {
-			if _, err := s.publishServiceComment(ctx, file.ID, inboxAlreadyProcessingComment); err != nil {
-				log.Printf("google inbox: document_id=%q publish already-processing comment: %v", file.ID, err)
-			}
 			continue
 		}
 
@@ -162,10 +161,6 @@ func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context, files []go
 
 func (s *GoogleInboxService) processCommandComments(ctx context.Context, files []google.DriveFile) error {
 	for _, file := range files {
-		if s.isPendingDocument(file.ID) {
-			continue
-		}
-
 		exists, err := s.documentRepo.HasBySourceAndExternalID(ctx, domain.DocumentSourceGoogleDocs, file.ID)
 		if err != nil {
 			return err
@@ -184,7 +179,20 @@ func (s *GoogleInboxService) processCommandComments(ctx context.Context, files [
 		if !s.isCommandNewerThanLatestCompleted(ctx, file.ID, command.createdAt) {
 			continue
 		}
+		if s.isPendingDocument(file.ID) {
+			if s.shouldNotifyBusyCommand(file.ID, command.commentID) {
+				if _, err := s.publishServiceComment(ctx, file.ID, inboxAlreadyProcessingComment); err != nil {
+					log.Printf("google inbox: document_id=%q publish already-processing comment: %v", file.ID, err)
+				} else {
+					s.markBusyCommandNotified(file.ID, command.commentID)
+				}
+			}
+			continue
+		}
 
+		if err := s.cleanupAgentComments(ctx, file.ID); err != nil {
+			log.Printf("google inbox: document_id=%q cleanup agent comments: %v", file.ID, err)
+		}
 		if _, err := s.publishServiceComment(ctx, file.ID, commandAcceptedComment(command)); err != nil {
 			log.Printf("google inbox: document_id=%q publish processing comment: %v", file.ID, err)
 		}
@@ -275,12 +283,34 @@ func (s *GoogleInboxService) loadLatestCommand(ctx context.Context, documentExte
 		if comment.Resolved {
 			continue
 		}
-		command, ok := parseReviewAgentCommand(comment.Content, comment.CreatedAt)
+		command, ok := parseReviewAgentCommand(comment.ID, comment.Content, comment.CreatedAt)
 		if ok {
 			return command, true, nil
 		}
 	}
 	return reviewAgentCommand{}, false, nil
+}
+
+func (s *GoogleInboxService) cleanupAgentComments(ctx context.Context, documentExternalID string) error {
+	comments, err := s.commentReader.List(ctx, documentExternalID)
+	if err != nil {
+		return err
+	}
+
+	ids := make([]string, 0)
+	for _, comment := range comments {
+		if !comment.AuthorIsMe || comment.ID == "" {
+			continue
+		}
+		if isReviewAgentCommandText(comment.Content) {
+			continue
+		}
+		ids = append(ids, comment.ID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return s.commentPublisher.Delete(ctx, documentExternalID, ids)
 }
 
 func (s *GoogleInboxService) isCommandNewerThanLatestCompleted(ctx context.Context, documentExternalID string, createdAt time.Time) bool {
@@ -307,6 +337,7 @@ func (s *GoogleInboxService) addPending(analysisID, documentExternalID string) {
 	defer s.mu.Unlock()
 	s.pending[analysisID] = inboxPendingAnalysis{
 		documentExternalID:  documentExternalID,
+		lastBusyCommandID:   "",
 		startedAt:           time.Now().UTC(),
 		progressCommentSent: false,
 	}
@@ -339,7 +370,7 @@ func (s *GoogleInboxService) snapshotPending() map[string]inboxPendingAnalysis {
 	return result
 }
 
-func parseReviewAgentCommand(content string, createdAtUnixNano int64) (reviewAgentCommand, bool) {
+func parseReviewAgentCommand(commentID, content string, createdAtUnixNano int64) (reviewAgentCommand, bool) {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return reviewAgentCommand{}, false
@@ -354,15 +385,16 @@ func parseReviewAgentCommand(content string, createdAtUnixNano int64) (reviewAge
 	createdAt := time.Unix(0, createdAtUnixNano).UTC()
 	switch {
 	case commandText == reviewAgentCommandFull:
-		return reviewAgentCommand{mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
+		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
 	case commandText == reviewAgentCommandIncremental:
-		return reviewAgentCommand{mode: domain.AnalysisModeIncrementalReview, createdAt: createdAt}, true
+		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeIncrementalReview, createdAt: createdAt}, true
 	case strings.HasPrefix(commandText, reviewAgentCommandIncrementalSection):
 		section := strings.TrimSpace(strings.TrimPrefix(commandText, reviewAgentCommandIncrementalSection))
 		if section == "" {
 			return reviewAgentCommand{}, false
 		}
 		return reviewAgentCommand{
+			commentID:          commentID,
 			mode:               domain.AnalysisModeIncrementalReview,
 			targetSectionTitle: section,
 			createdAt:          createdAt,
@@ -370,6 +402,10 @@ func parseReviewAgentCommand(content string, createdAtUnixNano int64) (reviewAge
 	default:
 		return reviewAgentCommand{}, false
 	}
+}
+
+func isReviewAgentCommandText(content string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(content)), reviewAgentCommandPrefix)
 }
 
 func reviewKeyForGoogleDoc(documentExternalID string) string {
@@ -384,6 +420,34 @@ func commandAcceptedComment(command reviewAgentCommand) string {
 		return fmt.Sprintf("Команда принята. Запускаю incremental review для раздела %s.", strings.TrimSpace(command.targetSectionTitle))
 	}
 	return inboxIncrementalCommandAcceptedComment
+}
+
+func (s *GoogleInboxService) shouldNotifyBusyCommand(documentExternalID, commandID string) bool {
+	if strings.TrimSpace(commandID) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pending := range s.pending {
+		if pending.documentExternalID != documentExternalID {
+			continue
+		}
+		return pending.lastBusyCommandID != commandID
+	}
+	return false
+}
+
+func (s *GoogleInboxService) markBusyCommandNotified(documentExternalID, commandID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for analysisID, pending := range s.pending {
+		if pending.documentExternalID != documentExternalID {
+			continue
+		}
+		pending.lastBusyCommandID = commandID
+		s.pending[analysisID] = pending
+		return
+	}
 }
 
 func (s *GoogleInboxService) validateCommandTargetSection(ctx context.Context, file google.DriveFile, command reviewAgentCommand) error {

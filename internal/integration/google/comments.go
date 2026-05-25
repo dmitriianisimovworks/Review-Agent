@@ -45,10 +45,11 @@ type CommentDraft struct {
 }
 
 type Comment struct {
-	ID        string
-	Content   string
-	CreatedAt int64
-	Resolved  bool
+	ID         string
+	Content    string
+	CreatedAt  int64
+	Resolved   bool
+	AuthorIsMe bool
 }
 
 type PublishedComment struct {

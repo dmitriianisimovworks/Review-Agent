@@ -56,27 +56,40 @@ func (p *DriveCommentPublisher) Publish(ctx context.Context, documentExternalID 
 }
 
 func (p *DriveCommentPublisher) List(ctx context.Context, documentExternalID string) ([]Comment, error) {
-	resp, err := p.driveService.Comments.
-		List(documentExternalID).
-		Fields("comments(id,content,createdTime,resolved)").
-		Context(ctx).
-		Do()
-	if err != nil {
-		return nil, fmt.Errorf("list drive comments: %w", err)
-	}
-
-	comments := make([]Comment, 0, len(resp.Comments))
-	for _, item := range resp.Comments {
-		createdAt := int64(0)
-		if parsed, err := time.Parse(time.RFC3339, item.CreatedTime); err == nil {
-			createdAt = parsed.UTC().UnixNano()
+	comments := make([]Comment, 0)
+	pageToken := ""
+	for {
+		call := p.driveService.Comments.
+			List(documentExternalID).
+			Fields("nextPageToken,comments(id,content,createdTime,resolved,author/me)").
+			Context(ctx)
+		if pageToken != "" {
+			call.PageToken(pageToken)
 		}
-		comments = append(comments, Comment{
-			ID:        item.Id,
-			Content:   item.Content,
-			CreatedAt: createdAt,
-			Resolved:  item.Resolved,
-		})
+
+		resp, err := call.Do()
+		if err != nil {
+			return nil, fmt.Errorf("list drive comments: %w", err)
+		}
+
+		for _, item := range resp.Comments {
+			createdAt := int64(0)
+			if parsed, err := time.Parse(time.RFC3339, item.CreatedTime); err == nil {
+				createdAt = parsed.UTC().UnixNano()
+			}
+			comments = append(comments, Comment{
+				ID:         item.Id,
+				Content:    item.Content,
+				CreatedAt:  createdAt,
+				Resolved:   item.Resolved,
+				AuthorIsMe: item.Author != nil && item.Author.Me,
+			})
+		}
+
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
 	}
 
 	sort.SliceStable(comments, func(i, j int) bool {
