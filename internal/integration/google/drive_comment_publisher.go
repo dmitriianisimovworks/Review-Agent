@@ -3,6 +3,8 @@ package google
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
@@ -51,6 +53,36 @@ func (p *DriveCommentPublisher) Publish(ctx context.Context, documentExternalID 
 	}
 
 	return published, nil
+}
+
+func (p *DriveCommentPublisher) List(ctx context.Context, documentExternalID string) ([]Comment, error) {
+	resp, err := p.driveService.Comments.
+		List(documentExternalID).
+		Fields("comments(id,content,createdTime,resolved)").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("list drive comments: %w", err)
+	}
+
+	comments := make([]Comment, 0, len(resp.Comments))
+	for _, item := range resp.Comments {
+		createdAt := int64(0)
+		if parsed, err := time.Parse(time.RFC3339, item.CreatedTime); err == nil {
+			createdAt = parsed.UTC().UnixNano()
+		}
+		comments = append(comments, Comment{
+			ID:        item.Id,
+			Content:   item.Content,
+			CreatedAt: createdAt,
+			Resolved:  item.Resolved,
+		})
+	}
+
+	sort.SliceStable(comments, func(i, j int) bool {
+		return comments[i].CreatedAt > comments[j].CreatedAt
+	})
+	return comments, nil
 }
 
 func (p *DriveCommentPublisher) Delete(ctx context.Context, documentExternalID string, commentIDs []string) error {

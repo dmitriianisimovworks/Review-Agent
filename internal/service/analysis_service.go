@@ -993,6 +993,10 @@ func resolveTargetSections(sections []domain.DocumentSection, targetSectionID, t
 		}
 		if normalizedTitle != "" && normalizeKeyPart(section.Title) == normalizedTitle {
 			selected = append(selected, section)
+			continue
+		}
+		if normalizedTitle != "" && strings.HasPrefix(normalizeKeyPart(section.Title), normalizedTitle+"_") {
+			selected = append(selected, section)
 		}
 	}
 	if len(selected) == 0 {

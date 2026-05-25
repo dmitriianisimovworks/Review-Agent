@@ -141,6 +141,7 @@ func New() (*App, error) {
 		analysisService,
 		commentService,
 		docsPublisher,
+		docsPublisher,
 	)
 
 	handler := api.NewRouter(api.Dependencies{

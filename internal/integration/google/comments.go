@@ -44,9 +44,20 @@ type CommentDraft struct {
 	Type          string
 }
 
+type Comment struct {
+	ID        string
+	Content   string
+	CreatedAt int64
+	Resolved  bool
+}
+
 type PublishedComment struct {
 	ID   string
 	Type string
+}
+
+type CommentReader interface {
+	List(ctx context.Context, documentExternalID string) ([]Comment, error)
 }
 
 type CommentPublisher interface {
@@ -62,6 +73,16 @@ func NewNoopDocumentReader() *NoopDocumentReader {
 
 func (r *NoopDocumentReader) Read(_ context.Context, _ string) (Document, error) {
 	return Document{}, nil
+}
+
+type NoopCommentReader struct{}
+
+func NewNoopCommentReader() *NoopCommentReader {
+	return &NoopCommentReader{}
+}
+
+func (r *NoopCommentReader) List(_ context.Context, _ string) ([]Comment, error) {
+	return nil, nil
 }
 
 type NoopCommentPublisher struct{}

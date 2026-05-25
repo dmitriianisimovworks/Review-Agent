@@ -129,6 +129,9 @@ func buildSummaryDrafts(document domain.Document, analysis domain.Analysis) []Dr
 		"",
 		compactSummary(analysis.Findings),
 	}
+	if roleSummary := summarizeRoleCoverage(analysis.Findings); len(roleSummary) > 0 {
+		lines = append(lines, roleSummary...)
+	}
 
 	if len(analysis.Findings) > 0 {
 		groups := groupFindingsByTheme(analysis.Findings)
@@ -353,6 +356,41 @@ func compactSummary(findings []domain.Finding) string {
 	}
 
 	return strings.Join(parts, ". ") + "."
+}
+
+func summarizeRoleCoverage(findings []domain.Finding) []string {
+	if len(findings) == 0 {
+		return nil
+	}
+
+	activeSet := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		role := strings.TrimSpace(finding.Role)
+		if role == "" {
+			continue
+		}
+		activeSet[role] = struct{}{}
+	}
+
+	active := make([]string, 0, len(activeSet))
+	quiet := make([]string, 0)
+	for _, role := range domain.DefaultReviewerRoles() {
+		label := roleLabel(string(role))
+		if _, ok := activeSet[string(role)]; ok {
+			active = append(active, label)
+			continue
+		}
+		quiet = append(quiet, label)
+	}
+
+	lines := make([]string, 0, 2)
+	if len(active) > 0 {
+		lines = append(lines, "Активные роли: "+strings.Join(active, ", ")+".")
+	}
+	if len(quiet) > 0 {
+		lines = append(lines, "Без замечаний: "+strings.Join(quiet, ", ")+".")
+	}
+	return lines
 }
 
 func groupFindingsByTheme(findings []domain.Finding) []themeGroup {

@@ -52,6 +52,9 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	if !strings.Contains(summary.Content, "Ключевых тем: 1") {
 		t.Fatalf("summary draft should contain compact totals: %q", summary.Content)
 	}
+	if !strings.Contains(summary.Content, "Активные роли:") || !strings.Contains(summary.Content, "Без замечаний:") {
+		t.Fatalf("summary draft should contain role coverage lines: %q", summary.Content)
+	}
 	if summary.AnchorLine == nil || *summary.AnchorLine < *inline.AnchorLine {
 		t.Fatalf("expected summary anchor to be at end of document")
 	}
@@ -111,6 +114,9 @@ func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
 	}
 	if !strings.Contains(content, "Дополнительно:") {
 		t.Fatalf("summary should contain grouped section: %q", content)
+	}
+	if !strings.Contains(content, "Активные роли:") || !strings.Contains(content, "Без замечаний:") {
+		t.Fatalf("summary should contain role coverage summary: %q", content)
 	}
 	if !strings.Contains(content, "- ") {
 		t.Fatalf("summary should contain grouped bullet points: %q", content)
