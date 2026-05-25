@@ -203,25 +203,30 @@ func roleInstructions(role domain.ReviewerRole) string {
 - смотри на mobile-specific сценарии: offline mode, unstable network, battery-sensitive flows и background behavior;
 - ищи проблемы синхронизации состояния, загрузки больших списков, пагинации и кеширования на мобильных клиентах;
 - отмечай риски слабой адаптации UX под мобильные ограничения и недостающие mobile edge cases;
-- не добавляй generic web/frontend/backend замечания, если нет прямого mobile-impact.`)
+- если в тексте нет прямого mobile-specific риска, верни пустой findings;
+- не добавляй generic web/frontend/backend замечания, если нет прямого mobile-impact;
+- допустимые темы для Mobile Lead: offline, unstable network, sync conflicts, mobile pagination, caching on device, background behavior, battery/network constraints, mobile responsiveness.`)
 	case domain.ReviewerRoleDevOpsReviewer:
 		return strings.TrimSpace(`
 - смотри на deployment, observability, backup/recovery и эксплуатационные риски;
 - ищи gaps в monitoring, alerting, секретах, конфигурации, SLA и отказоустойчивости;
 - отмечай риски частичной деградации и проблемные зависимости от внешних систем;
-- не описывай общие product или UX gaps без прямого ops/runtime impact.`)
+- не описывай общие product или UX gaps без прямого ops/runtime impact;
+- не поднимай вопросы ролей, UX или бизнес-логики, если нет явной связи с runtime, observability, deploy или ops.`)
 	case domain.ReviewerRoleQAReviewer:
 		return strings.TrimSpace(`
 - смотри на тестируемость, acceptance criteria, edge cases и error flows;
 - ищи сценарии, которые невозможно однозначно проверить;
 - отмечай gaps в негативных кейсах, правах доступа, конкурентных сценариях и регрессиях;
-- не дублируй security/devops/backend замечания, если проблема прежде всего не в тестируемости.`)
+- не дублируй security/devops/backend замечания, если проблема прежде всего не в тестируемости;
+- если замечание не влияет на testability, acceptance criteria или edge cases, пропусти его.`)
 	case domain.ReviewerRoleSecurityLead:
 		return strings.TrimSpace(`
 - смотри на auth, permissions, data exposure, file uploads и security boundaries;
 - ищи insecure flows, недостаточную валидацию, утечки секретов и missing security requirements;
 - отмечай production-риски вокруг доступа, инъекций, хранения чувствительных данных и abuse scenarios;
-- не поднимай generic RBAC или lifecycle gaps до security finding без явного security-impact.`)
+- не поднимай generic RBAC или lifecycle gaps до security finding без явного security-impact;
+- если проблема не ведёт к нарушению доступа, утечке, инъекции, злоупотреблению или компрометации данных, не делай из неё security finding.`)
 	default:
 		return ""
 	}

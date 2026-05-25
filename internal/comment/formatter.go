@@ -177,8 +177,14 @@ func formatRoleComment(role string, findings []domain.Finding) string {
 	}
 
 	for idx, finding := range findings {
+		lines = append(lines, fmt.Sprintf("%d. [%s] %s", idx+1, finding.Severity, strings.TrimSpace(finding.Problem)))
+		if section := strings.TrimSpace(finding.SectionTitle); section != "" {
+			lines = append(lines, "Связано с разделом:", section)
+		}
+		if fragment := quoteForComment(finding.SourceChunk); fragment != "" {
+			lines = append(lines, "Фрагмент:", fragment)
+		}
 		lines = append(lines,
-			fmt.Sprintf("%d. [%s] %s", idx+1, finding.Severity, strings.TrimSpace(finding.Problem)),
 			"Почему это плохо:",
 			strings.TrimSpace(finding.WhyItIsBad),
 			"Как исправить:",
@@ -340,18 +346,13 @@ func compactSummary(findings []domain.Finding) string {
 
 	parts := []string{fmt.Sprintf("Ключевых тем: %d", len(groups))}
 	if criticalThemes > 0 {
-		parts = append(parts, fmt.Sprintf("%d blocker-like", criticalThemes))
+		parts = append(parts, fmt.Sprintf("Критичных: %d", criticalThemes))
 	}
 	if errorThemes > 0 {
-		parts = append(parts, fmt.Sprintf("%d important", errorThemes))
+		parts = append(parts, fmt.Sprintf("Важных: %d", errorThemes))
 	}
 
-	roleParts := summarizeRoles(findings)
-	if len(roleParts) > 0 {
-		return strings.Join(parts, ". ") + ". Основные роли: " + strings.Join(roleParts, ", ") + "."
-	}
-
-	return strings.Join(parts, ". ")
+	return strings.Join(parts, ". ") + "."
 }
 
 func groupFindingsByTheme(findings []domain.Finding) []themeGroup {
@@ -417,7 +418,17 @@ func shortProblem(problem string) string {
 func themeTitle(finding domain.Finding) string {
 	switch finding.Category {
 	case "technical_risk", "scalability_risk", "devops_risk":
-		return "Технические и интеграционные риски"
+		problem := strings.ToLower(finding.Problem)
+		switch {
+		case strings.Contains(problem, "refund"), strings.Contains(problem, "возврат"), strings.Contains(problem, "invoice"), strings.Contains(problem, "платеж"):
+			return "Refund и финансовые операции"
+		case strings.Contains(problem, "конкур"), strings.Contains(problem, "одноврем"), strings.Contains(problem, "блокиров"), strings.Contains(problem, "race condition"), strings.Contains(problem, "atomic"):
+			return "Конкурентный доступ и блокировки"
+		case strings.Contains(problem, "audit"), strings.Contains(problem, "истори"), strings.Contains(problem, "лог"):
+			return "Аудит и история изменений"
+		default:
+			return "Технические и интеграционные риски"
+		}
 	case "security_risk":
 		return "Безопасность и доступы"
 	case "api_problem":
@@ -431,12 +442,16 @@ func themeTitle(finding domain.Finding) string {
 	default:
 		problem := strings.ToLower(finding.Problem)
 		switch {
+		case strings.Contains(problem, "refund"), strings.Contains(problem, "возврат"), strings.Contains(problem, "invoice"), strings.Contains(problem, "платеж"):
+			return "Refund и финансовые операции"
+		case strings.Contains(problem, "конкур"), strings.Contains(problem, "одноврем"), strings.Contains(problem, "блокиров"), strings.Contains(problem, "race condition"), strings.Contains(problem, "atomic"):
+			return "Конкурентный доступ и блокировки"
 		case strings.Contains(problem, "роль"), strings.Contains(problem, "доступ"), strings.Contains(problem, "прав"):
 			return "Роли и права доступа"
 		case strings.Contains(problem, "sla"), strings.Contains(problem, "slo"), strings.Contains(problem, "производительност"):
 			return "SLA и нефункциональные требования"
 		case strings.Contains(problem, "коммент"), strings.Contains(problem, "audit"), strings.Contains(problem, "истори"):
-			return "Audit trail и история изменений"
+			return "Аудит и история изменений"
 		case strings.Contains(problem, "эскалац"), strings.Contains(problem, "статус"), strings.Contains(problem, "жизненн"):
 			return "Жизненный цикл кейса"
 		case strings.Contains(problem, "экспорт"), strings.Contains(problem, "отч"), strings.Contains(problem, "анонимизац"):

@@ -17,12 +17,13 @@ func TestDefaultFormatter_Format(t *testing.T) {
 		Summary: "Анализ завершён.",
 		Findings: []domain.Finding{
 			{
-				Role:        string(domain.ReviewerRoleSeniorBackendEngineer),
-				Severity:    domain.SeverityCritical,
-				Problem:     "Не описано удаление связанных данных.",
-				WhyItIsBad:  "Возможна потеря согласованности.",
-				HowToFix:    "Описать lifecycle связанных сущностей.",
-				SourceChunk: "Пользователь может удалить аккаунт.",
+				Role:         string(domain.ReviewerRoleSeniorBackendEngineer),
+				Severity:     domain.SeverityCritical,
+				SectionTitle: "Удаление аккаунта",
+				Problem:      "Не описано удаление связанных данных.",
+				WhyItIsBad:   "Возможна потеря согласованности.",
+				HowToFix:     "Описать lifecycle связанных сущностей.",
+				SourceChunk:  "Пользователь может удалить аккаунт.",
 			},
 		},
 	}
@@ -39,6 +40,9 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	}
 	if !strings.Contains(inline.Content, "🧱 Senior Backend Engineer") || !strings.Contains(inline.Content, "Ключевые замечания:") {
 		t.Fatalf("inline draft does not follow role-based format: %q", inline.Content)
+	}
+	if !strings.Contains(inline.Content, "Связано с разделом:") || !strings.Contains(inline.Content, "Фрагмент:") {
+		t.Fatalf("inline draft should contain section and fragment references: %q", inline.Content)
 	}
 
 	summary := drafts[1]
@@ -101,6 +105,9 @@ func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
 	content := drafts[0].Content
 	if strings.Contains(content, "1. [") {
 		t.Fatalf("summary should not contain long enumerated list anymore: %q", content)
+	}
+	if strings.Contains(content, "important") || strings.Contains(content, "blocker-like") || strings.Contains(content, "Основные роли:") {
+		t.Fatalf("summary should use human russian wording without role line: %q", content)
 	}
 	if !strings.Contains(content, "Дополнительно:") {
 		t.Fatalf("summary should contain grouped section: %q", content)
