@@ -19,6 +19,7 @@ func TestDefaultFormatter_Format(t *testing.T) {
 			{
 				Role:         string(domain.ReviewerRoleSeniorBackendEngineer),
 				Severity:     domain.SeverityCritical,
+				SectionID:    "4.3",
 				SectionTitle: "Удаление аккаунта",
 				Problem:      "Не описано удаление связанных данных.",
 				WhyItIsBad:   "Возможна потеря согласованности.",
@@ -40,6 +41,9 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	}
 	if !strings.Contains(inline.Content, "🧱 Senior Backend Engineer") || !strings.Contains(inline.Content, "Ключевые замечания:") {
 		t.Fatalf("inline draft does not follow role-based format: %q", inline.Content)
+	}
+	if !strings.Contains(inline.Content, "[CRITICAL] [4.3 Удаление аккаунта] Не описано удаление связанных данных.") {
+		t.Fatalf("inline draft should contain compact finding headline: %q", inline.Content)
 	}
 	if !strings.Contains(inline.Content, "Связано с разделом:") || !strings.Contains(inline.Content, "Фрагмент:") {
 		t.Fatalf("inline draft should contain section and fragment references: %q", inline.Content)

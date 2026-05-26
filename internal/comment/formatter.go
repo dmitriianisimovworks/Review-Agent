@@ -181,7 +181,7 @@ func formatRoleComment(role string, findings []domain.Finding) string {
 	}
 
 	for idx, finding := range findings {
-		lines = append(lines, fmt.Sprintf("%d. [%s] %s", idx+1, finding.Severity, strings.TrimSpace(finding.Problem)))
+		lines = append(lines, fmt.Sprintf("%d. %s", idx+1, findingHeadline(finding)))
 		if section := strings.TrimSpace(finding.SectionTitle); section != "" {
 			lines = append(lines, "Связано с разделом:", section)
 		}
@@ -198,6 +198,24 @@ func formatRoleComment(role string, findings []domain.Finding) string {
 	}
 
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func findingHeadline(finding domain.Finding) string {
+	parts := []string{fmt.Sprintf("[%s]", finding.Severity)}
+
+	sectionLabel := strings.TrimSpace(finding.SectionID)
+	sectionTitle := strings.TrimSpace(finding.SectionTitle)
+	switch {
+	case sectionLabel != "" && sectionTitle != "":
+		parts = append(parts, fmt.Sprintf("[%s %s]", sectionLabel, sectionTitle))
+	case sectionTitle != "":
+		parts = append(parts, fmt.Sprintf("[%s]", sectionTitle))
+	case sectionLabel != "":
+		parts = append(parts, fmt.Sprintf("[%s]", sectionLabel))
+	}
+
+	parts = append(parts, strings.TrimSpace(finding.Problem))
+	return strings.Join(parts, " ")
 }
 
 func findAnchorLine(documentText, sourceChunk string) *int {
