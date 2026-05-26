@@ -89,13 +89,14 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 		}
 
 		topFinding := roleFindings[0]
+		anchor := resolveFindingAnchor(document, topFinding)
 		draft := Draft{
 			Type:          "inline",
 			Content:       formatRoleComment(string(role), roleFindings),
-			QuotedContent: quoteForComment(topFinding.SourceChunk),
+			QuotedContent: anchor.quoted,
 		}
-		if line := findAnchorLine(document.NormalizedContent, topFinding.SourceChunk); line != nil {
-			draft.AnchorLine = line
+		if anchor.line != nil {
+			draft.AnchorLine = anchor.line
 		}
 		collected = append(collected, roleDraft{draft: draft, score: roleSeverityScore(roleFindings)})
 	}
