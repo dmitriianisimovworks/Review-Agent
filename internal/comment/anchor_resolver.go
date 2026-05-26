@@ -11,19 +11,42 @@ type resolvedAnchor struct {
 	quoted string
 }
 
-func resolveFindingAnchor(document domain.Document, finding domain.Finding) resolvedAnchor {
-	if anchor := resolveAnchorBySectionHeading(document, finding); anchor.line != nil {
+type anchorContext struct {
+	nonEmptyLineByText map[string]int
+}
+
+func newAnchorContext(document domain.Document) anchorContext {
+	lines := strings.Split(strings.TrimSpace(document.NormalizedContent), "\n")
+	nonEmptyLineByText := make(map[string]int, len(lines))
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		key := normalizeAnchorText(trimmed)
+		if key == "" {
+			continue
+		}
+		if _, exists := nonEmptyLineByText[key]; !exists {
+			nonEmptyLineByText[key] = idx + 1
+		}
+	}
+	return anchorContext{nonEmptyLineByText: nonEmptyLineByText}
+}
+
+func resolveFindingAnchor(ctx anchorContext, document domain.Document, finding domain.Finding) resolvedAnchor {
+	if anchor := resolveAnchorBySectionHeading(ctx, document, finding); anchor.line != nil {
 		return anchor
 	}
 
 	quoted := quoteForComment(finding.SourceChunk)
 	return resolvedAnchor{
-		line:   findAnchorLine(document.NormalizedContent, finding.SourceChunk),
+		line:   ctx.findLine(document.NormalizedContent, finding.SourceChunk),
 		quoted: quoted,
 	}
 }
 
-func resolveAnchorBySectionHeading(document domain.Document, finding domain.Finding) resolvedAnchor {
+func resolveAnchorBySectionHeading(ctx anchorContext, document domain.Document, finding domain.Finding) resolvedAnchor {
 	for _, block := range document.Blocks {
 		if block.Kind != "heading" {
 			continue
@@ -31,7 +54,7 @@ func resolveAnchorBySectionHeading(document domain.Document, finding domain.Find
 		if !matchesFindingSection(block.SectionTitle, block.Text, finding) {
 			continue
 		}
-		if line := findLineByExactOrContainedText(document.NormalizedContent, block.Text); line != nil {
+		if line := ctx.findLine(document.NormalizedContent, block.Text); line != nil {
 			return resolvedAnchor{
 				line:   line,
 				quoted: safeTruncate(strings.TrimSpace(block.Text), 220),
@@ -43,7 +66,7 @@ func resolveAnchorBySectionHeading(document domain.Document, finding domain.Find
 		if !matchesFindingSection(section.Title, section.Title, finding) {
 			continue
 		}
-		if line := findLineByExactOrContainedText(document.NormalizedContent, section.Title); line != nil {
+		if line := ctx.findLine(document.NormalizedContent, section.Title); line != nil {
 			return resolvedAnchor{
 				line:   line,
 				quoted: safeTruncate(strings.TrimSpace(section.Title), 220),
@@ -52,6 +75,16 @@ func resolveAnchorBySectionHeading(document domain.Document, finding domain.Find
 	}
 
 	return resolvedAnchor{}
+}
+
+func (c anchorContext) findLine(documentText, target string) *int {
+	normalizedTarget := normalizeAnchorText(target)
+	if normalizedTarget != "" {
+		if line, exists := c.nonEmptyLineByText[normalizedTarget]; exists {
+			return &line
+		}
+	}
+	return findLineByExactOrContainedText(documentText, target)
 }
 
 func matchesFindingSection(sectionTitle, headingText string, finding domain.Finding) bool {

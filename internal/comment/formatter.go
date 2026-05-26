@@ -59,6 +59,7 @@ func (f *DefaultFormatter) Format(document domain.Document, analysis domain.Anal
 func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draft {
 	grouped := groupFindingsByRole(findings)
 	order := domain.DefaultReviewerRoles()
+	anchors := newAnchorContext(document)
 
 	type roleDraft struct {
 		draft Draft
@@ -89,7 +90,7 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 		}
 
 		topFinding := roleFindings[0]
-		anchor := resolveFindingAnchor(document, topFinding)
+		anchor := resolveFindingAnchor(anchors, document, topFinding)
 		draft := Draft{
 			Type:          "inline",
 			Content:       formatRoleComment(string(role), roleFindings),
