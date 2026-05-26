@@ -187,6 +187,42 @@ func TestBuildSummaryDraftsDeduplicatesExamplesInsideTheme(t *testing.T) {
 	}
 }
 
+func TestBuildSummaryDraftsUsesUnifiedCommentLifecycleTheme(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{
+				Role:     string(domain.ReviewerRoleTechLead),
+				Severity: domain.SeverityWarning,
+				Category: "missing_requirement",
+				Problem:  "В разделе 5.2 не описаны правила управления комментариями: редактирование, удаление, история изменений, упоминания и ограничения по размеру.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorFrontendEngineer),
+				Severity: domain.SeverityWarning,
+				Category: "frontend_risk",
+				Problem:  "Не описаны правила редактирования, удаления и упоминания комментариев, а также лимиты на размер и необходимость истории изменений.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorBackendEngineer),
+				Severity: domain.SeverityWarning,
+				Category: "technical_risk",
+				Problem:  "Отсутствуют требования по управлению жизненным циклом внутренних комментариев: редактирование, удаление, история изменений.",
+			},
+		},
+	}
+
+	drafts := buildSummaryDrafts(document, analysis)
+	content := drafts[0].Content
+	if strings.Count(content, "Комментарии и lifecycle") != 1 {
+		t.Fatalf("expected unified comment lifecycle theme once, got %q", content)
+	}
+}
+
 func TestBuildRoleDraftsCreatesSingleCommentPerRole(t *testing.T) {
 	t.Parallel()
 

@@ -128,3 +128,42 @@ func TestShapeFinalFindingsPrefersQAOwnerForReasonDictionaryRules(t *testing.T) 
 		t.Fatalf("expected QA finding to win ownership, got role %q", shaped[0].Role)
 	}
 }
+
+func TestShapeFinalFindingsPrefersQAOwnerForInternalCommentLifecycle(t *testing.T) {
+	t.Parallel()
+
+	findings := []domain.Finding{
+		{
+			Role:       string(domain.ReviewerRoleTechLead),
+			Category:   "missing_requirement",
+			Severity:   domain.SeverityWarning,
+			Problem:    "В разделе 5.2 не описаны правила управления комментариями: редактирование, удаление, история изменений, упоминания и ограничения по размеру.",
+			WhyItIsBad: "Это приводит к неоднозначной реализации.",
+			HowToFix:   "Добавить требования по правам, истории и лимитам комментариев.",
+		},
+		{
+			Role:       string(domain.ReviewerRoleQAReviewer),
+			Category:   "missing_requirement",
+			Severity:   domain.SeverityError,
+			Problem:    "Отсутствуют требования по управлению комментариями: редактирование, удаление, история изменений, упоминания и лимиты размера.",
+			WhyItIsBad: "Нельзя однозначно проверить корректность работы с комментариями.",
+			HowToFix:   "Добавить acceptance criteria для lifecycle комментариев.",
+		},
+		{
+			Role:       string(domain.ReviewerRoleSeniorFrontendEngineer),
+			Category:   "frontend_risk",
+			Severity:   domain.SeverityWarning,
+			Problem:    "Не описаны правила редактирования, удаления и упоминания комментариев, а также лимиты на размер.",
+			WhyItIsBad: "Непонятно, как реализовать UX комментариев.",
+			HowToFix:   "Описать UI-поведение и ограничения комментариев.",
+		},
+	}
+
+	shaped := shapeFinalFindings(findings, domain.AnalysisModeFullReview)
+	if len(shaped) != 1 {
+		t.Fatalf("expected 1 shaped finding, got %d", len(shaped))
+	}
+	if shaped[0].Role != string(domain.ReviewerRoleQAReviewer) {
+		t.Fatalf("expected QA finding to win ownership, got role %q", shaped[0].Role)
+	}
+}

@@ -14,6 +14,9 @@ func IssueFingerprint(finding domain.Finding) string {
 		return "refund_threshold"
 	case hasAll(text, "partial", "refund") || hasAll(text, "частич", "возврат"):
 		return "partial_refund_rules"
+	case hasAny(text, "комментар", "comment", "notes", "заметк") &&
+		hasAny(text, "редакт", "удал", "истори", "упомин", "mention", "лимит", "размер"):
+		return "internal_comment_lifecycle"
 	case hasAny(text, "справочник", "dictionary", "reason", "причин") && hasAny(text, "обязат", "mandatory", "required", "действ", "action"):
 		return "reason_dictionary_rules"
 	case hasAny(text, "конкур", "одноврем", "race", "atomic", "lock", "блокиров", "захват") && hasAny(text, "кейс", "case", "queue", "очеред"):
@@ -45,6 +48,8 @@ func ThemeTitle(finding domain.Finding) string {
 	switch IssueFingerprint(finding) {
 	case "refund_threshold", "partial_refund_rules":
 		return "Refund и финансовые операции"
+	case "internal_comment_lifecycle":
+		return "Комментарии и lifecycle"
 	case "reason_dictionary_rules":
 		return "Причины и справочники действий"
 	case "concurrency_case_assignment":
@@ -89,6 +94,8 @@ func PreferredRole(fingerprint string) string {
 		return string(domain.ReviewerRoleTechLead)
 	case "partial_refund_rules":
 		return string(domain.ReviewerRoleSeniorBackendEngineer)
+	case "internal_comment_lifecycle":
+		return string(domain.ReviewerRoleQAReviewer)
 	case "reason_dictionary_rules":
 		return string(domain.ReviewerRoleQAReviewer)
 	case "concurrency_case_assignment":
