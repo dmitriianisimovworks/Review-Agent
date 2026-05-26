@@ -13,6 +13,7 @@ type Config struct {
 	App      AppConfig
 	HTTP     HTTPConfig
 	LLM      LLMConfig
+	Vector   VectorConfig
 	Redis    RedisConfig
 	DB       DatabaseConfig
 	Cache    CacheConfig
@@ -32,11 +33,25 @@ type HTTPConfig struct {
 }
 
 type LLMConfig struct {
-	Provider string
-	BaseURL  string
-	APIKey   string
-	Model    string
-	Timeout  int
+	Provider    string
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Timeout     int
+	Temperature float64
+	TopP        float64
+	MaxTokens   int
+}
+
+type VectorConfig struct {
+	Enabled                 bool
+	DBURL                   string
+	DBAPIKey                string
+	Collection              string
+	EmbeddingBaseURL        string
+	EmbeddingAPIKey         string
+	EmbeddingModel          string
+	EmbeddingTimeoutSeconds int
 }
 
 type RedisConfig struct {
@@ -78,11 +93,24 @@ func Load() (Config, error) {
 			Address: getEnvOrDefault("HTTP_ADDRESS", ":8080"),
 		},
 		LLM: LLMConfig{
-			Provider: getEnvOrDefault("LLM_PROVIDER", "openai_compatible"),
-			BaseURL:  getEnv("LLM_BASE_URL"),
-			APIKey:   getEnv("LLM_API_KEY"),
-			Model:    getEnv("LLM_MODEL"),
-			Timeout:  getEnvInt("LLM_TIMEOUT_SECONDS", 90),
+			Provider:    getEnvOrDefault("LLM_PROVIDER", "openai_compatible"),
+			BaseURL:     getEnv("LLM_BASE_URL"),
+			APIKey:      getEnv("LLM_API_KEY"),
+			Model:       getEnv("LLM_MODEL"),
+			Timeout:     getEnvInt("LLM_TIMEOUT_SECONDS", 90),
+			Temperature: getEnvFloat("LLM_TEMPERATURE", 0.3),
+			TopP:        getEnvFloat("LLM_TOP_P", 0.8),
+			MaxTokens:   getEnvInt("LLM_MAX_TOKENS", 1100),
+		},
+		Vector: VectorConfig{
+			Enabled:                 getEnvBool("VECTOR_ENABLED", false),
+			DBURL:                   getEnvOrDefault("VECTOR_DB_URL", "http://qdrant:6333"),
+			DBAPIKey:                getEnv("VECTOR_DB_API_KEY"),
+			Collection:              getEnvOrDefault("VECTOR_COLLECTION", "review_memory"),
+			EmbeddingBaseURL:        getEnvOrDefault("VECTOR_EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"),
+			EmbeddingAPIKey:         getEnvOrDefault("VECTOR_EMBEDDING_API_KEY", getEnv("LLM_API_KEY")),
+			EmbeddingModel:          getEnvOrDefault("VECTOR_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
+			EmbeddingTimeoutSeconds: getEnvInt("VECTOR_EMBEDDING_TIMEOUT_SECONDS", 30),
 		},
 		Redis: RedisConfig{
 			URL: getEnv("REDIS_URL"),
@@ -148,6 +176,37 @@ func getEnvInt(key string, fallback int) int {
 	return parsed
 }
 
+func getEnvBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	case "":
+		return fallback
+	default:
+		return fallback
+	}
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	var parsed float64
+	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil {
+		return fallback
+	}
+	if parsed <= 0 {
+		return fallback
+	}
+
+	return parsed
+}
+
 func validate(cfg Config) error {
 	var issues []string
 
@@ -171,6 +230,15 @@ func validate(cfg Config) error {
 	validateURL(&issues, "REDIS_URL", cfg.Redis.URL)
 	validateURL(&issues, "LLM_BASE_URL", cfg.LLM.BaseURL)
 	validateURL(&issues, "GOOGLE_OAUTH_REDIRECT_URL", cfg.Google.OAuthRedirectURL)
+	if cfg.Vector.Enabled {
+		validateURL(&issues, "VECTOR_DB_URL", cfg.Vector.DBURL)
+		validateURL(&issues, "VECTOR_EMBEDDING_BASE_URL", cfg.Vector.EmbeddingBaseURL)
+		requireNonPlaceholder(&issues, "VECTOR_EMBEDDING_API_KEY", cfg.Vector.EmbeddingAPIKey)
+		requireNonPlaceholder(&issues, "VECTOR_EMBEDDING_MODEL", cfg.Vector.EmbeddingModel)
+		if cfg.Vector.EmbeddingTimeoutSeconds < 5 {
+			issues = append(issues, "VECTOR_EMBEDDING_TIMEOUT_SECONDS must be >= 5")
+		}
+	}
 
 	if cfg.Document.ChunkSize < 500 {
 		issues = append(issues, "DOCUMENT_CHUNK_SIZE must be >= 500")
@@ -182,6 +250,15 @@ func validate(cfg Config) error {
 
 	if cfg.LLM.Timeout < 5 {
 		issues = append(issues, "LLM_TIMEOUT_SECONDS must be >= 5")
+	}
+	if cfg.LLM.Temperature < 0 || cfg.LLM.Temperature > 2 {
+		issues = append(issues, "LLM_TEMPERATURE must be between 0 and 2")
+	}
+	if cfg.LLM.TopP <= 0 || cfg.LLM.TopP > 1 {
+		issues = append(issues, "LLM_TOP_P must be > 0 and <= 1")
+	}
+	if cfg.LLM.MaxTokens < 128 {
+		issues = append(issues, "LLM_MAX_TOKENS must be >= 128")
 	}
 
 	if cfg.Cache.AnalysisTTLSeconds < 30 {

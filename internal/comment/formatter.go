@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"technical-specification-review-agent/internal/domain"
+	"technical-specification-review-agent/internal/reviewshape"
 )
 
 type PublishMode string
@@ -39,7 +40,8 @@ const (
 	maxTotalInlineComments   = 7
 	maxSummaryThemes         = 4
 	maxThemeExamples         = 2
-	maxRoleCommentFindings   = 3
+	maxRoleCommentFindings   = 2
+	maxRoleDrafts            = 5
 )
 
 func (f *DefaultFormatter) Format(document domain.Document, analysis domain.Analysis, mode PublishMode) []Draft {
@@ -58,7 +60,12 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 	grouped := groupFindingsByRole(findings)
 	order := domain.DefaultReviewerRoles()
 
-	drafts := make([]Draft, 0, len(grouped))
+	type roleDraft struct {
+		draft Draft
+		score int
+	}
+
+	collected := make([]roleDraft, 0, len(grouped))
 	for _, role := range order {
 		roleFindings := grouped[string(role)]
 		if len(roleFindings) == 0 {
@@ -90,7 +97,19 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 		if line := findAnchorLine(document.NormalizedContent, topFinding.SourceChunk); line != nil {
 			draft.AnchorLine = line
 		}
-		drafts = append(drafts, draft)
+		collected = append(collected, roleDraft{draft: draft, score: roleSeverityScore(roleFindings)})
+	}
+
+	sort.SliceStable(collected, func(i, j int) bool {
+		return collected[i].score > collected[j].score
+	})
+	if len(collected) > maxRoleDrafts {
+		collected = collected[:maxRoleDrafts]
+	}
+
+	drafts := make([]Draft, 0, len(collected))
+	for _, item := range collected {
+		drafts = append(drafts, item.draft)
 	}
 	return drafts
 }
@@ -110,6 +129,9 @@ func buildSummaryDrafts(document domain.Document, analysis domain.Analysis) []Dr
 		"Итоговый комментарий",
 		"",
 		compactSummary(analysis.Findings),
+	}
+	if roleSummary := summarizeRoleCoverage(analysis.Findings); len(roleSummary) > 0 {
+		lines = append(lines, roleSummary...)
 	}
 
 	if len(analysis.Findings) > 0 {
@@ -159,8 +181,14 @@ func formatRoleComment(role string, findings []domain.Finding) string {
 	}
 
 	for idx, finding := range findings {
+		lines = append(lines, fmt.Sprintf("%d. %s", idx+1, findingHeadline(finding)))
+		if section := strings.TrimSpace(finding.SectionTitle); section != "" {
+			lines = append(lines, "Связано с разделом:", section)
+		}
+		if fragment := quoteForComment(finding.SourceChunk); fragment != "" {
+			lines = append(lines, "Фрагмент:", fragment)
+		}
 		lines = append(lines,
-			fmt.Sprintf("%d. [%s] %s", idx+1, finding.Severity, strings.TrimSpace(finding.Problem)),
 			"Почему это плохо:",
 			strings.TrimSpace(finding.WhyItIsBad),
 			"Как исправить:",
@@ -170,6 +198,24 @@ func formatRoleComment(role string, findings []domain.Finding) string {
 	}
 
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func findingHeadline(finding domain.Finding) string {
+	parts := []string{fmt.Sprintf("[%s]", finding.Severity)}
+
+	sectionLabel := strings.TrimSpace(finding.SectionID)
+	sectionTitle := strings.TrimSpace(finding.SectionTitle)
+	switch {
+	case sectionLabel != "" && sectionTitle != "":
+		parts = append(parts, fmt.Sprintf("[%s %s]", sectionLabel, sectionTitle))
+	case sectionTitle != "":
+		parts = append(parts, fmt.Sprintf("[%s]", sectionTitle))
+	case sectionLabel != "":
+		parts = append(parts, fmt.Sprintf("[%s]", sectionLabel))
+	}
+
+	parts = append(parts, strings.TrimSpace(finding.Problem))
+	return strings.Join(parts, " ")
 }
 
 func findAnchorLine(documentText, sourceChunk string) *int {
@@ -308,37 +354,62 @@ func compactSummary(findings []domain.Finding) string {
 		return "Существенных замечаний по документу не обнаружено."
 	}
 
-	critical := 0
-	errorsCount := 0
-	warnings := 0
-	for _, finding := range findings {
-		switch finding.Severity {
+	groups := groupFindingsByTheme(findings)
+	criticalThemes := 0
+	errorThemes := 0
+	for _, group := range groups {
+		switch highestSeverity(group.Findings) {
 		case domain.SeverityCritical:
-			critical++
+			criticalThemes++
 		case domain.SeverityError:
-			errorsCount++
-		case domain.SeverityWarning:
-			warnings++
+			errorThemes++
 		}
 	}
 
-	parts := []string{fmt.Sprintf("Найдено %d замечаний", len(findings))}
-	if critical > 0 {
-		parts = append(parts, fmt.Sprintf("%d CRITICAL", critical))
+	parts := []string{fmt.Sprintf("Ключевых тем: %d", len(groups))}
+	if criticalThemes > 0 {
+		parts = append(parts, fmt.Sprintf("Критичных: %d", criticalThemes))
 	}
-	if errorsCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d ERROR", errorsCount))
-	}
-	if warnings > 0 {
-		parts = append(parts, fmt.Sprintf("%d WARNING", warnings))
+	if errorThemes > 0 {
+		parts = append(parts, fmt.Sprintf("Важных: %d", errorThemes))
 	}
 
-	roleParts := summarizeRoles(findings)
-	if len(roleParts) > 0 {
-		return strings.Join(parts, ": ") + ". Активные роли: " + strings.Join(roleParts, ", ") + "."
+	return strings.Join(parts, ". ") + "."
+}
+
+func summarizeRoleCoverage(findings []domain.Finding) []string {
+	if len(findings) == 0 {
+		return nil
 	}
 
-	return strings.Join(parts, ": ")
+	activeSet := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		role := strings.TrimSpace(finding.Role)
+		if role == "" {
+			continue
+		}
+		activeSet[role] = struct{}{}
+	}
+
+	active := make([]string, 0, len(activeSet))
+	quiet := make([]string, 0)
+	for _, role := range domain.DefaultReviewerRoles() {
+		label := roleLabel(string(role))
+		if _, ok := activeSet[string(role)]; ok {
+			active = append(active, label)
+			continue
+		}
+		quiet = append(quiet, label)
+	}
+
+	lines := make([]string, 0, 2)
+	if len(active) > 0 {
+		lines = append(lines, "Активные роли: "+strings.Join(active, ", ")+".")
+	}
+	if len(quiet) > 0 {
+		lines = append(lines, "Без замечаний: "+strings.Join(quiet, ", ")+".")
+	}
+	return lines
 }
 
 func groupFindingsByTheme(findings []domain.Finding) []themeGroup {
@@ -380,17 +451,32 @@ func groupFindingsByTheme(findings []domain.Finding) []themeGroup {
 }
 
 func formatThemeGroup(group themeGroup) string {
-	examples := make([]string, 0, min(len(group.Findings), maxThemeExamples))
-	limit := min(len(group.Findings), maxThemeExamples)
+	unique := uniqueThemeFindings(group.Findings)
+	examples := make([]string, 0, min(len(unique), maxThemeExamples))
+	limit := min(len(unique), maxThemeExamples)
 	for i := 0; i < limit; i++ {
-		examples = append(examples, shortProblem(group.Findings[i].Problem))
+		examples = append(examples, shortProblem(unique[i].Problem))
 	}
 
 	line := fmt.Sprintf("- %s: %s.", group.Title, strings.Join(examples, "; "))
-	if len(group.Findings) > limit {
-		line += fmt.Sprintf(" Ещё %d замеч. в этой теме.", len(group.Findings)-limit)
+	if len(unique) > limit {
+		line += fmt.Sprintf(" Ещё %d замеч. в этой теме.", len(unique)-limit)
 	}
 	return line
+}
+
+func uniqueThemeFindings(findings []domain.Finding) []domain.Finding {
+	result := make([]domain.Finding, 0, len(findings))
+	seen := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		key := reviewshape.IssueFingerprint(finding)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, finding)
+	}
+	return result
 }
 
 func shortProblem(problem string) string {
@@ -402,42 +488,7 @@ func shortProblem(problem string) string {
 }
 
 func themeTitle(finding domain.Finding) string {
-	switch finding.Category {
-	case "technical_risk", "scalability_risk", "devops_risk":
-		return "Технические и интеграционные риски"
-	case "security_risk":
-		return "Безопасность и доступы"
-	case "api_problem":
-		return "API и интеграционные контракты"
-	case "ux_problem", "frontend_risk":
-		return "UX и поведение интерфейса"
-	case "ambiguity":
-		return "Неоднозначные требования"
-	case "contradiction":
-		return "Противоречия"
-	default:
-		problem := strings.ToLower(finding.Problem)
-		switch {
-		case strings.Contains(problem, "роль"), strings.Contains(problem, "доступ"), strings.Contains(problem, "прав"):
-			return "Роли и права доступа"
-		case strings.Contains(problem, "sla"), strings.Contains(problem, "slo"), strings.Contains(problem, "производительност"):
-			return "SLA и нефункциональные требования"
-		case strings.Contains(problem, "коммент"), strings.Contains(problem, "audit"), strings.Contains(problem, "истори"):
-			return "Audit trail и история изменений"
-		case strings.Contains(problem, "эскалац"), strings.Contains(problem, "статус"), strings.Contains(problem, "жизненн"):
-			return "Жизненный цикл кейса"
-		case strings.Contains(problem, "экспорт"), strings.Contains(problem, "отч"), strings.Contains(problem, "анонимизац"):
-			return "Отчёты и выгрузки"
-		case strings.Contains(problem, "ai"), strings.Contains(problem, "рекомендац"):
-			return "AI-рекомендации и ответственность"
-		case strings.Contains(problem, "вложен"), strings.Contains(problem, "mime"), strings.Contains(problem, "файл"):
-			return "Вложения и файловая безопасность"
-		case strings.Contains(problem, "интеграц"), strings.Contains(problem, "retry"), strings.Contains(problem, "идемпотент"), strings.Contains(problem, "асинхрон"):
-			return "Технические и интеграционные риски"
-		default:
-			return "Пропущенные требования"
-		}
-	}
+	return reviewshape.ThemeTitle(finding)
 }
 
 func findingKey(finding domain.Finding) string {
@@ -524,6 +575,24 @@ func safeTruncate(value string, limit int) string {
 	}
 
 	return text + "..."
+}
+
+func roleSeverityScore(findings []domain.Finding) int {
+	score := 0
+	for _, finding := range findings {
+		score += severityRank(finding.Severity) * 10
+	}
+	return score
+}
+
+func highestSeverity(findings []domain.Finding) domain.Severity {
+	top := domain.SeverityInfo
+	for _, finding := range findings {
+		if severityRank(finding.Severity) > severityRank(top) {
+			top = finding.Severity
+		}
+	}
+	return top
 }
 
 func MarshalAnchor(line int) string {

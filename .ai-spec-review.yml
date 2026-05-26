@@ -1,0 +1,26 @@
+review:
+  architecture: true
+  backend: true
+  frontend: true
+  mobile: true
+  security: true
+  devops: true
+  qa: true
+
+severity:
+  critical_block_merge: true
+
+comments:
+  inline: true
+  summary: true
+
+context:
+  memory_enabled: true
+
+document:
+  chunk_size: 5000
+
+llm:
+  temperature: 0.3
+  top_p: 0.8
+  max_tokens: 1100

@@ -58,6 +58,10 @@ context:
   memory_enabled: false
 document:
   chunk_size: 2048
+llm:
+  temperature: 0.3
+  top_p: 0.8
+  max_tokens: 1100
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -75,6 +79,15 @@ document:
 
 	if settings.ChunkSize != 2048 {
 		t.Fatalf("expected overridden chunk size 2048, got %d", settings.ChunkSize)
+	}
+	if settings.LLMTemperature != 0.3 {
+		t.Fatalf("expected overridden llm temperature 0.3, got %v", settings.LLMTemperature)
+	}
+	if settings.LLMTopP != 0.8 {
+		t.Fatalf("expected overridden llm top_p 0.8, got %v", settings.LLMTopP)
+	}
+	if settings.LLMMaxTokens != 1100 {
+		t.Fatalf("expected overridden llm max_tokens 1100, got %d", settings.LLMMaxTokens)
 	}
 	if settings.MemoryEnabled {
 		t.Fatalf("expected memory to be disabled")

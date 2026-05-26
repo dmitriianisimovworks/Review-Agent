@@ -29,7 +29,7 @@ func TestBuildReviewMemoryCompactsHistory(t *testing.T) {
 					Role:       string(domain.ReviewerRoleTechLead),
 					Category:   "missing_requirement",
 					Severity:   domain.SeverityError,
-					Problem:    "Не описаны финальные статусы",
+					Problem:    "Не описано, как определяется порог для дополнительного согласования возврата",
 					WhyItIsBad: "Нельзя замкнуть жизненный цикл",
 					HowToFix:   "Определить полный state machine",
 				},
@@ -53,6 +53,9 @@ func TestBuildReviewMemoryCompactsHistory(t *testing.T) {
 	if len(memory.ArchitecturalNotes) == 0 {
 		t.Fatalf("expected architectural notes to be built")
 	}
+	if len(memory.ConsistencyHints) == 0 {
+		t.Fatalf("expected consistency hints to be built")
+	}
 }
 
 func TestEnrichReviewMemoryAddsStructuredKnowledge(t *testing.T) {
@@ -75,9 +78,9 @@ func TestEnrichReviewMemoryAddsStructuredKnowledge(t *testing.T) {
 	}
 	findings := []domain.Finding{
 		{
-			Role:       string(domain.ReviewerRoleTechLead),
-			Problem:    "Не описана сущность \"заявка\" и права admin",
-			HowToFix:   "Добавить glossary для заявки и роли admin",
+			Role:         string(domain.ReviewerRoleTechLead),
+			Problem:      "Не описана сущность \"заявка\" и права admin",
+			HowToFix:     "Добавить glossary для заявки и роли admin",
 			SectionTitle: "User Roles",
 		},
 	}
@@ -173,6 +176,42 @@ func TestFilterFindingsByModeSuppressesLightlyRephrasedDuplicate(t *testing.T) {
 	}
 }
 
+func TestFilterFindingsByModeSuppressesFingerprintDuplicateInSameSection(t *testing.T) {
+	memory := domain.ReviewMemory{
+		ReviewKey:     "upload:spec",
+		PriorRunCount: 1,
+		KnownFindings: []domain.Finding{
+			{
+				Role:         string(domain.ReviewerRoleQAReviewer),
+				Category:     "ambiguity",
+				Severity:     domain.SeverityWarning,
+				Problem:      "Не указано, для каких действий обязательна причина из справочника.",
+				SectionID:    "4.2",
+				SectionTitle: "4.2 Case Review",
+			},
+		},
+	}
+
+	current := []domain.Finding{
+		{
+			Role:         string(domain.ReviewerRoleSeniorFrontendEngineer),
+			Category:     "frontend_risk",
+			Severity:     domain.SeverityWarning,
+			Problem:      "Не определено, для каких именно действий обязательна причина из справочника.",
+			SectionID:    "4.2",
+			SectionTitle: "4.2 Case Review",
+		},
+	}
+
+	filtered, suppressed := filterFindingsByMode(current, memory, domain.AnalysisModeIncrementalReview)
+	if len(filtered) != 0 {
+		t.Fatalf("expected fingerprint duplicate to be suppressed, got %d findings", len(filtered))
+	}
+	if suppressed != 1 {
+		t.Fatalf("expected 1 suppressed duplicate, got %d", suppressed)
+	}
+}
+
 func TestCompactMemoryFindingsLimitsRoleFlood(t *testing.T) {
 	findings := []domain.Finding{
 		{Role: string(domain.ReviewerRoleTechLead), Category: "missing_requirement", Severity: domain.SeverityCritical, Problem: "Проблема 1"},
@@ -200,6 +239,32 @@ func TestCompactMemoryFindingsLimitsRoleFlood(t *testing.T) {
 	}
 	if qaCount > reviewMemoryRoleLimit {
 		t.Fatalf("expected qa memory cap %d, got %d", reviewMemoryRoleLimit, qaCount)
+	}
+}
+
+func TestCompactMemoryFindingsDeduplicatesByFingerprint(t *testing.T) {
+	findings := []domain.Finding{
+		{
+			Role:         string(domain.ReviewerRoleQAReviewer),
+			Category:     "ambiguity",
+			Severity:     domain.SeverityWarning,
+			Problem:      "Не указано, для каких действий обязательна причина из справочника.",
+			SectionID:    "4.2",
+			SectionTitle: "4.2 Case Review",
+		},
+		{
+			Role:         string(domain.ReviewerRoleSeniorFrontendEngineer),
+			Category:     "frontend_risk",
+			Severity:     domain.SeverityWarning,
+			Problem:      "Не определено, для каких именно действий обязательна причина из справочника.",
+			SectionID:    "4.2",
+			SectionTitle: "4.2 Case Review",
+		},
+	}
+
+	compacted := compactMemoryFindings(findings)
+	if len(compacted) != 1 {
+		t.Fatalf("expected 1 compacted finding after fingerprint dedup, got %d", len(compacted))
 	}
 }
 

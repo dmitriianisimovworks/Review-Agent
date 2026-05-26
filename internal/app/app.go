@@ -17,6 +17,7 @@ import (
 	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/integration/google"
 	"technical-specification-review-agent/internal/integration/llm"
+	"technical-specification-review-agent/internal/integration/vector"
 	"technical-specification-review-agent/internal/jobs"
 	platformpostgres "technical-specification-review-agent/internal/platform/postgres"
 	platformredis "technical-specification-review-agent/internal/platform/redis"
@@ -122,6 +123,12 @@ func New() (*App, error) {
 		reviewSettings,
 		jobRunner,
 	)
+	if cfg.Vector.Enabled {
+		embedder := vector.NewOpenRouterEmbedder(cfg.Vector)
+		store := vector.NewQdrantStore(cfg.Vector)
+		analysisService.SetVectorIndexer(service.NewVectorIndexer(embedder, store))
+		analysisService.SetVectorRetriever(service.NewVectorRetriever(embedder, store))
+	}
 	commentService := service.NewCommentService(
 		documentRepo,
 		analysisRepo,
@@ -140,6 +147,7 @@ func New() (*App, error) {
 		documentRepo,
 		analysisService,
 		commentService,
+		docsPublisher,
 		docsPublisher,
 	)
 

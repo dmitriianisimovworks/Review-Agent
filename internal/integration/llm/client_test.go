@@ -1,6 +1,11 @@
 package llm
 
-import "testing"
+import (
+	"testing"
+
+	"technical-specification-review-agent/internal/config"
+	"technical-specification-review-agent/internal/prompt"
+)
 
 func TestParseChunkAnalysisExtractsFirstBalancedJSONObject(t *testing.T) {
 	content := "```json\n{\"findings\":[{\"role\":\"qa_reviewer\",\"category\":\"missing_requirement\",\"severity\":\"ERROR\",\"problem\":\"Проблема\",\"why_it_is_bad\":\"Последствие\",\"how_to_fix\":\"Исправление\"}]}\n```\nДополнительный хвост"
@@ -27,5 +32,47 @@ func TestExtractFirstJSONObjectHandlesBracesInsideStrings(t *testing.T) {
 	expected := `{"findings":[{"problem":"Нужно сохранить формат {json} внутри строки","why_it_is_bad":"ok","how_to_fix":"ok","role":"qa_reviewer","category":"contradiction","severity":"WARNING"}]}`
 	if got != expected {
 		t.Fatalf("unexpected extracted object:\nwant: %s\ngot:  %s", expected, got)
+	}
+}
+
+func TestBuildChatMessagesAddsAssistantPrefixForDeepSeek(t *testing.T) {
+	cfg := config.LLMConfig{
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-flash",
+	}
+	if !shouldUseDeepSeekJSONPrefix(cfg) {
+		t.Fatalf("expected deepseek prefix to be enabled")
+	}
+
+	messages := buildChatMessages(prompt.BuiltPrompt{
+		System: "system",
+		User:   "user",
+	}, true)
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(messages))
+	}
+	if messages[2].Role != "assistant" {
+		t.Fatalf("expected assistant prefix message, got %s", messages[2].Role)
+	}
+	if messages[2].Content != "{\"findings\":" {
+		t.Fatalf("unexpected assistant prefix: %s", messages[2].Content)
+	}
+}
+
+func TestBuildChatMessagesSkipsAssistantPrefixForNonDeepSeek(t *testing.T) {
+	cfg := config.LLMConfig{
+		BaseURL: "https://api.cerebras.ai/v1",
+		Model:   "gpt-oss-120b",
+	}
+	if shouldUseDeepSeekJSONPrefix(cfg) {
+		t.Fatalf("expected deepseek prefix to be disabled")
+	}
+
+	messages := buildChatMessages(prompt.BuiltPrompt{
+		System: "system",
+		User:   "user",
+	}, false)
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
 }

@@ -1,5 +1,6 @@
 .DS_Store
 .env
+.env.example
 .env.local
 .env.*.local
 /.cache/
@@ -15,3 +16,4 @@
 /apps/web/out/
 docs/
 web/
+.tmp-gotmp/

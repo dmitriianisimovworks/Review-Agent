@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,13 +148,32 @@ func (f *recordingFormatter) Format(_ domain.Document, _ domain.Analysis, mode c
 }
 
 type stubCommentPublisher struct {
-	documentID string
-	drafts     []google.CommentDraft
+	documentID        string
+	drafts            []google.CommentDraft
+	publishedBatches  [][]google.CommentDraft
+	publishIDs        []string
+	deletedDocumentID string
+	deletedCommentIDs []string
 }
 
-func (p *stubCommentPublisher) Publish(_ context.Context, documentExternalID string, drafts []google.CommentDraft) error {
+func (p *stubCommentPublisher) Publish(_ context.Context, documentExternalID string, drafts []google.CommentDraft) ([]google.PublishedComment, error) {
 	p.documentID = documentExternalID
 	p.drafts = drafts
+	p.publishedBatches = append(p.publishedBatches, append([]google.CommentDraft(nil), drafts...))
+	published := make([]google.PublishedComment, 0, len(drafts))
+	for idx, draft := range drafts {
+		id := ""
+		if idx < len(p.publishIDs) {
+			id = p.publishIDs[idx]
+		}
+		published = append(published, google.PublishedComment{ID: id, Type: draft.Type})
+	}
+	return published, nil
+}
+
+func (p *stubCommentPublisher) Delete(_ context.Context, documentExternalID string, commentIDs []string) error {
+	p.deletedDocumentID = documentExternalID
+	p.deletedCommentIDs = append([]string(nil), commentIDs...)
 	return nil
 }
 
@@ -193,6 +213,9 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 				MemoryEnabled:   false,
 				ChunkSize:       40,
 				MaxChunks:       10,
+				LLMTemperature:  0.3,
+				LLMTopP:         0.8,
+				LLMMaxTokens:    1100,
 			},
 		},
 		nil,
@@ -226,6 +249,15 @@ func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing
 		}
 		if input.Memory.HasContext() {
 			t.Fatalf("expected no memory to be sent into prompt")
+		}
+		if input.Temperature != 0.3 {
+			t.Fatalf("expected llm temperature 0.3, got %v", input.Temperature)
+		}
+		if input.TopP != 0.8 {
+			t.Fatalf("expected llm top_p 0.8, got %v", input.TopP)
+		}
+		if input.MaxTokens != 1100 {
+			t.Fatalf("expected llm max_tokens 1100, got %d", input.MaxTokens)
 		}
 	}
 }
@@ -346,14 +378,14 @@ func TestAnalysisServiceBlocksMergeWhenCriticalPolicyEnabled(t *testing.T) {
 				Role:       string(domain.ReviewerRoleTechLead),
 				Category:   "technical_risk",
 				Severity:   domain.SeverityCritical,
-				Problem:    "Нет стратегии отката миграций",
-				WhyItIsBad: "Сломанный деплой нельзя безопасно откатить",
-				HowToFix:   "Добавить rollback plan",
+				Problem:    "Нет стратегии отката миграций для core flow",
+				WhyItIsBad: "Production outage нельзя безопасно остановить без потери данных",
+				HowToFix:   "Добавить rollback plan для предотвращения outage и data loss",
 			}},
 			PromptVersion: "test",
 			SystemPrompt:  "system",
 			UserPrompt:    "user",
-			RawResponse:   `{"findings":[{"role":"tech_lead","category":"technical_risk","severity":"CRITICAL","problem":"Нет стратегии отката миграций","why_it_is_bad":"Сломанный деплой нельзя безопасно откатить","how_to_fix":"Добавить rollback plan"}]}`,
+			RawResponse:   `{"findings":[{"role":"tech_lead","category":"technical_risk","severity":"CRITICAL","problem":"Нет стратегии отката миграций для core flow","why_it_is_bad":"Production outage нельзя безопасно остановить без потери данных","how_to_fix":"Добавить rollback plan для предотвращения outage и data loss"}]}`,
 		},
 	}
 
@@ -518,5 +550,97 @@ func TestAnalysisServiceIncrementalReviewTargetsSingleSection(t *testing.T) {
 	}
 	if llmClient.inputs[0].SectionTitle != "SLA" {
 		t.Fatalf("expected targeted section title SLA, got %q", llmClient.inputs[0].SectionTitle)
+	}
+}
+
+func TestAnalysisServiceShapesFindingsAcrossRoles(t *testing.T) {
+	documentRepo := &stubDocumentRepo{}
+	analysisRepo := &stubAnalysisRepo{}
+	llmClient := &recordingLLMClient{
+		result: llm.ChunkAnalysisResult{
+			Findings: []domain.Finding{
+				{
+					Role:       string(domain.ReviewerRoleTechLead),
+					Category:   "missing_requirement",
+					Severity:   domain.SeverityCritical,
+					Problem:    "Не описано, кто может отменять подтвержденный refund.",
+					WhyItIsBad: "Нарушается бизнес-процесс.",
+					HowToFix:   "Указать роли и правила отмены refund.",
+				},
+				{
+					Role:       string(domain.ReviewerRoleSolutionArchitect),
+					Category:   "missing_requirement",
+					Severity:   domain.SeverityCritical,
+					Problem:    "Отсутствует описание, кто имеет право отменять уже подтвержденный refund.",
+					WhyItIsBad: "Появляется риск конфликтов ролей.",
+					HowToFix:   "Зафиксировать полномочия на отмену refund.",
+				},
+				{
+					Role:       string(domain.ReviewerRoleSecurityLead),
+					Category:   "security_risk",
+					Severity:   domain.SeverityCritical,
+					Problem:    "Не описана проверка прав на отмену refund.",
+					WhyItIsBad: "Возможны неавторизованные действия и финансовые потери.",
+					HowToFix:   "Добавить RBAC и аудит доступа.",
+				},
+			},
+			PromptVersion: "test",
+			SystemPrompt:  "system",
+			UserPrompt:    "user",
+			RawResponse:   `{"findings":[]}`,
+		},
+	}
+
+	service := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		llmClient,
+		nil,
+		nil,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{
+			settings: reviewconfig.Settings{
+				Roles: []domain.ReviewerRole{
+					domain.ReviewerRoleTechLead,
+					domain.ReviewerRoleSolutionArchitect,
+					domain.ReviewerRoleSecurityLead,
+				},
+				InlineComments:  true,
+				SummaryComments: true,
+				MemoryEnabled:   true,
+				ChunkSize:       5000,
+				MaxChunks:       10,
+			},
+		},
+		nil,
+	)
+
+	analysis, err := service.StartAnalysis(context.Background(), StartAnalysisInput{
+		Name:    "spec.md",
+		Source:  domain.DocumentSourceUpload,
+		Content: "Refund flow paragraph.",
+		Mode:    domain.AnalysisModeFullReview,
+	})
+	if err != nil {
+		t.Fatalf("StartAnalysis() error = %v", err)
+	}
+
+	if len(analysis.Findings) > 3 {
+		t.Fatalf("expected shaped findings to stay compact, got %d", len(analysis.Findings))
+	}
+	criticalCount := 0
+	for _, finding := range analysis.Findings {
+		if finding.Severity == domain.SeverityCritical {
+			criticalCount++
+		}
+	}
+	if criticalCount > 1 {
+		t.Fatalf("expected most generic criticals to be downgraded, got %d criticals", criticalCount)
+	}
+	if strings.Contains(analysis.Summary, "Найдено") {
+		t.Fatalf("expected summary to be cluster-based, got %q", analysis.Summary)
 	}
 }

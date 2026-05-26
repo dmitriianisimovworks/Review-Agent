@@ -17,12 +17,14 @@ func TestDefaultFormatter_Format(t *testing.T) {
 		Summary: "Анализ завершён.",
 		Findings: []domain.Finding{
 			{
-				Role:        string(domain.ReviewerRoleSeniorBackendEngineer),
-				Severity:    domain.SeverityCritical,
-				Problem:     "Не описано удаление связанных данных.",
-				WhyItIsBad:  "Возможна потеря согласованности.",
-				HowToFix:    "Описать lifecycle связанных сущностей.",
-				SourceChunk: "Пользователь может удалить аккаунт.",
+				Role:         string(domain.ReviewerRoleSeniorBackendEngineer),
+				Severity:     domain.SeverityCritical,
+				SectionID:    "4.3",
+				SectionTitle: "Удаление аккаунта",
+				Problem:      "Не описано удаление связанных данных.",
+				WhyItIsBad:   "Возможна потеря согласованности.",
+				HowToFix:     "Описать lifecycle связанных сущностей.",
+				SourceChunk:  "Пользователь может удалить аккаунт.",
 			},
 		},
 	}
@@ -40,13 +42,22 @@ func TestDefaultFormatter_Format(t *testing.T) {
 	if !strings.Contains(inline.Content, "🧱 Senior Backend Engineer") || !strings.Contains(inline.Content, "Ключевые замечания:") {
 		t.Fatalf("inline draft does not follow role-based format: %q", inline.Content)
 	}
+	if !strings.Contains(inline.Content, "[CRITICAL] [4.3 Удаление аккаунта] Не описано удаление связанных данных.") {
+		t.Fatalf("inline draft should contain compact finding headline: %q", inline.Content)
+	}
+	if !strings.Contains(inline.Content, "Связано с разделом:") || !strings.Contains(inline.Content, "Фрагмент:") {
+		t.Fatalf("inline draft should contain section and fragment references: %q", inline.Content)
+	}
 
 	summary := drafts[1]
 	if !strings.Contains(summary.Content, "Итоговый комментарий") {
 		t.Fatalf("summary draft missing title: %q", summary.Content)
 	}
-	if !strings.Contains(summary.Content, "Найдено 1 замечаний") {
+	if !strings.Contains(summary.Content, "Ключевых тем: 1") {
 		t.Fatalf("summary draft should contain compact totals: %q", summary.Content)
+	}
+	if !strings.Contains(summary.Content, "Активные роли:") || !strings.Contains(summary.Content, "Без замечаний:") {
+		t.Fatalf("summary draft should contain role coverage lines: %q", summary.Content)
 	}
 	if summary.AnchorLine == nil || *summary.AnchorLine < *inline.AnchorLine {
 		t.Fatalf("expected summary anchor to be at end of document")
@@ -102,11 +113,113 @@ func TestBuildSummaryDraftsGroupsRemainingFindings(t *testing.T) {
 	if strings.Contains(content, "1. [") {
 		t.Fatalf("summary should not contain long enumerated list anymore: %q", content)
 	}
+	if strings.Contains(content, "important") || strings.Contains(content, "blocker-like") || strings.Contains(content, "Основные роли:") {
+		t.Fatalf("summary should use human russian wording without role line: %q", content)
+	}
 	if !strings.Contains(content, "Дополнительно:") {
 		t.Fatalf("summary should contain grouped section: %q", content)
 	}
+	if !strings.Contains(content, "Активные роли:") || !strings.Contains(content, "Без замечаний:") {
+		t.Fatalf("summary should contain role coverage summary: %q", content)
+	}
 	if !strings.Contains(content, "- ") {
 		t.Fatalf("summary should contain grouped bullet points: %q", content)
+	}
+}
+
+func TestBuildSummaryDraftsUsesUnifiedThemeGrouping(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{
+				Role:     string(domain.ReviewerRoleTechLead),
+				Severity: domain.SeverityError,
+				Category: "missing_requirement",
+				Problem:  "Не описано поведение системы при одновременной попытке нескольких пользователей взять в работу один и тот же кейс.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorBackendEngineer),
+				Severity: domain.SeverityError,
+				Category: "technical_risk",
+				Problem:  "Не описано поведение при конкурентном доступе к кейсу, когда два пользователя одновременно пытаются взять один и тот же кейс.",
+			},
+		},
+	}
+
+	drafts := buildSummaryDrafts(document, analysis)
+	content := drafts[0].Content
+	if strings.Count(content, "Конкурентный доступ и блокировки") != 1 {
+		t.Fatalf("expected unified concurrency theme once, got %q", content)
+	}
+}
+
+func TestBuildSummaryDraftsDeduplicatesExamplesInsideTheme(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{
+				Role:     string(domain.ReviewerRoleQAReviewer),
+				Severity: domain.SeverityWarning,
+				Category: "ambiguity",
+				Problem:  "Не указано, для каких действий обязательна причина из справочника.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorFrontendEngineer),
+				Severity: domain.SeverityWarning,
+				Category: "frontend_risk",
+				Problem:  "Не определено, для каких именно действий обязательна причина из справочника.",
+			},
+		},
+	}
+
+	drafts := buildSummaryDrafts(document, analysis)
+	content := drafts[0].Content
+	if strings.Count(content, "причина из справочника") != 1 {
+		t.Fatalf("expected one summarized example for reason dictionary theme, got %q", content)
+	}
+}
+
+func TestBuildSummaryDraftsUsesUnifiedCommentLifecycleTheme(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{
+				Role:     string(domain.ReviewerRoleTechLead),
+				Severity: domain.SeverityWarning,
+				Category: "missing_requirement",
+				Problem:  "В разделе 5.2 не описаны правила управления комментариями: редактирование, удаление, история изменений, упоминания и ограничения по размеру.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorFrontendEngineer),
+				Severity: domain.SeverityWarning,
+				Category: "frontend_risk",
+				Problem:  "Не описаны правила редактирования, удаления и упоминания комментариев, а также лимиты на размер и необходимость истории изменений.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorBackendEngineer),
+				Severity: domain.SeverityWarning,
+				Category: "technical_risk",
+				Problem:  "Отсутствуют требования по управлению жизненным циклом внутренних комментариев: редактирование, удаление, история изменений.",
+			},
+		},
+	}
+
+	drafts := buildSummaryDrafts(document, analysis)
+	content := drafts[0].Content
+	if strings.Count(content, "Комментарии и lifecycle") != 1 {
+		t.Fatalf("expected unified comment lifecycle theme once, got %q", content)
 	}
 }
 

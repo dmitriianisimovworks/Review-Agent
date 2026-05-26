@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"technical-specification-review-agent/internal/parser"
 	"technical-specification-review-agent/internal/repository"
 	"technical-specification-review-agent/internal/reviewconfig"
+	"technical-specification-review-agent/internal/reviewshape"
 )
 
 type AnalysisService struct {
@@ -32,9 +34,18 @@ type AnalysisService struct {
 	documentConfig   config.DocumentConfig
 	reviewConfig     reviewconfig.Provider
 	jobRunner        jobs.Runner
+	vectorIndexer    AnalysisVectorIndexer
+	vectorRetriever  AnalysisVectorRetriever
 }
 
-const maxFindingsPerRole = 5
+const (
+	maxFindingsPerRole      = 2
+	maxFindingsFullReview   = 12
+	maxFindingsIncremental  = 6
+	maxFindingsPerTheme     = 2
+	maxSummaryThemes        = 4
+	maxSummaryThemeExamples = 2
+)
 
 type StartAnalysisInput struct {
 	Name               string
@@ -73,6 +84,14 @@ func NewAnalysisService(
 		reviewConfig:     reviewConfig,
 		jobRunner:        jobRunner,
 	}
+}
+
+func (s *AnalysisService) SetVectorIndexer(indexer AnalysisVectorIndexer) {
+	s.vectorIndexer = indexer
+}
+
+func (s *AnalysisService) SetVectorRetriever(retriever AnalysisVectorRetriever) {
+	s.vectorRetriever = retriever
 }
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
@@ -129,6 +148,7 @@ func (s *AnalysisService) startAnalysisSync(ctx context.Context, input StartAnal
 	if s.analysisCache != nil {
 		_ = s.analysisCache.Set(ctx, analysis)
 	}
+	s.indexAnalysisBestEffort(ctx, document, analysis)
 
 	return analysis, nil
 }
@@ -245,7 +265,17 @@ func (s *AnalysisService) ProcessAnalysis(ctx context.Context, analysisID string
 	if s.analysisCache != nil {
 		_ = s.analysisCache.Set(ctx, completed)
 	}
+	s.indexAnalysisBestEffort(ctx, document, completed)
 	return nil
+}
+
+func (s *AnalysisService) indexAnalysisBestEffort(ctx context.Context, document domain.Document, analysis domain.Analysis) {
+	if s.vectorIndexer == nil {
+		return
+	}
+	if err := s.vectorIndexer.IndexAnalysis(ctx, document, analysis); err != nil {
+		log.Printf("vector indexing failed: analysis_id=%q document_id=%q err=%v", analysis.ID, document.ID, err)
+	}
 }
 
 func (s *AnalysisService) analyzeChunksByRoles(
@@ -255,6 +285,7 @@ func (s *AnalysisService) analyzeChunksByRoles(
 	mode domain.AnalysisMode,
 	now time.Time,
 	memory domain.ReviewMemory,
+	settings reviewconfig.Settings,
 	roles []domain.ReviewerRole,
 ) ([]domain.AnalysisChunk, []domain.Finding, int, error) {
 	type llmOutcome struct {
@@ -288,6 +319,9 @@ func (s *AnalysisService) analyzeChunksByRoles(
 					Source:       document.Source,
 					Role:         role,
 					Memory:       memory,
+					Temperature:  settings.LLMTemperature,
+					TopP:         settings.LLMTopP,
+					MaxTokens:    settings.LLMMaxTokens,
 				})
 				if err != nil {
 					return apperrors.Wrap(apperrors.KindDependency, fmt.Sprintf("failed to analyze chunk %d for role %s", idx+1, role), err)
@@ -482,6 +516,14 @@ func (s *AnalysisService) prepareAnalysisDocument(
 	if err != nil {
 		return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
 	}
+	if settings.MemoryEnabled && s.vectorRetriever != nil {
+		enrichedMemory, retrievalErr := s.vectorRetriever.EnrichMemory(ctx, document, parsed, promptMemory)
+		if retrievalErr != nil {
+			log.Printf("vector retrieval failed: review_key=%q err=%v", document.ReviewKey, retrievalErr)
+		} else {
+			promptMemory = enrichedMemory
+		}
+	}
 	document.NormalizedContent = parsed.Text
 	return document, parsed, promptMemory, nil
 }
@@ -495,12 +537,12 @@ func (s *AnalysisService) buildCompletedAnalysis(
 	createdAt time.Time,
 	settings reviewconfig.Settings,
 ) domain.Analysis {
-	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, createdAt, promptMemory, settings.Roles)
+	chunks, findings, suppressedFindings, err := s.analyzeChunksByRoles(ctx, document, parsed, mode, createdAt, promptMemory, settings, settings.Roles)
 	if err != nil {
 		return domain.Analysis{ErrorMessage: err.Error()}
 	}
 
-	aggregatedFindings := deduplicateFindings(findings)
+	aggregatedFindings := shapeFinalFindings(findings, mode)
 	completedAt := time.Now().UTC()
 	mergeBlocked, blockingFindings := evaluateMergePolicy(aggregatedFindings, settings)
 	enrichedMemory := enrichReviewMemory(promptMemory, parsed.Sections, aggregatedFindings, buildSummary(aggregatedFindings, len(parsed.Chunks)))
@@ -572,36 +614,27 @@ func buildSummary(findings []domain.Finding, chunkCount int) string {
 	}
 
 	severityCounts := map[domain.Severity]int{}
-	categoryCounts := map[string]int{}
 	for _, finding := range findings {
 		severityCounts[finding.Severity]++
-		categoryCounts[finding.Category]++
 	}
 
-	topCategories := make([]string, 0, len(categoryCounts))
-	for category := range categoryCounts {
-		topCategories = append(topCategories, category)
-	}
-
-	sort.Slice(topCategories, func(i, j int) bool {
-		if categoryCounts[topCategories[i]] == categoryCounts[topCategories[j]] {
-			return topCategories[i] < topCategories[j]
+	groups := groupFindingsByTheme(findings)
+	titles := make([]string, 0, minAnalysisInt(len(groups), maxSummaryThemes))
+	for idx, group := range groups {
+		if idx >= maxSummaryThemes {
+			break
 		}
-		return categoryCounts[topCategories[i]] > categoryCounts[topCategories[j]]
-	})
-
-	if len(topCategories) > 3 {
-		topCategories = topCategories[:3]
+		titles = append(titles, group.title)
 	}
 
 	return fmt.Sprintf(
-		"Анализ завершён. Обработано фрагментов: %d. После фильтрации оставлено %d замечаний: %d CRITICAL, %d ERROR, %d WARNING. Основные категории: %s.",
+		"Анализ завершён. Обработано фрагментов: %d. Выделено %d ключевых замечаний: %d CRITICAL, %d ERROR, %d WARNING. Ключевые темы: %s.",
 		chunkCount,
 		len(findings),
 		severityCounts[domain.SeverityCritical],
 		severityCounts[domain.SeverityError],
 		severityCounts[domain.SeverityWarning],
-		strings.Join(topCategories, ", "),
+		strings.Join(titles, ", "),
 	)
 }
 
@@ -641,6 +674,24 @@ func filterRoleFindings(findings []domain.Finding) []domain.Finding {
 	return filtered
 }
 
+func shapeFinalFindings(findings []domain.Finding, mode domain.AnalysisMode) []domain.Finding {
+	normalized := normalizeFindingsSeverity(findings)
+	clustered := deduplicateFindingsByTheme(normalized)
+	limited := limitFindingsPerTheme(clustered)
+	sort.SliceStable(limited, func(i, j int) bool {
+		left := findingScore(limited[i])
+		right := findingScore(limited[j])
+		if left == right {
+			if limited[i].Category == limited[j].Category {
+				return limited[i].Problem < limited[j].Problem
+			}
+			return limited[i].Category < limited[j].Category
+		}
+		return left > right
+	})
+	return limitTotalFindings(limited, mode)
+}
+
 func (s *AnalysisService) loadReviewConfig() (reviewconfig.Settings, error) {
 	if s.reviewConfig == nil {
 		return reviewconfig.Settings{
@@ -650,6 +701,9 @@ func (s *AnalysisService) loadReviewConfig() (reviewconfig.Settings, error) {
 			MemoryEnabled:   true,
 			ChunkSize:       s.documentConfig.ChunkSize,
 			MaxChunks:       s.documentConfig.MaxChunks,
+			LLMTemperature:  0.3,
+			LLMTopP:         0.8,
+			LLMMaxTokens:    1100,
 		}, nil
 	}
 
@@ -682,13 +736,13 @@ func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory,
 
 	known := make(map[string]domain.Finding, len(memory.KnownFindings))
 	for _, finding := range memory.KnownFindings {
-		known[memoryFindingKey(finding)] = finding
+		known[memoryIssueKey(finding)] = finding
 	}
 
 	filtered := make([]domain.Finding, 0, len(findings))
 	suppressedCount := 0
 	for _, finding := range findings {
-		existing, exists := known[memoryFindingKey(finding)]
+		existing, exists := known[memoryIssueKey(finding)]
 		if !exists {
 			filtered = append(filtered, finding)
 			continue
@@ -719,12 +773,148 @@ func deduplicateFindings(findings []domain.Finding) []domain.Finding {
 	return result
 }
 
+type themeFindingGroup struct {
+	title    string
+	findings []domain.Finding
+}
+
+func groupFindingsByTheme(findings []domain.Finding) []themeFindingGroup {
+	buckets := map[string][]domain.Finding{}
+	for _, finding := range findings {
+		title := findingThemeTitle(finding)
+		buckets[title] = append(buckets[title], finding)
+	}
+
+	groups := make([]themeFindingGroup, 0, len(buckets))
+	for title, bucket := range buckets {
+		sort.SliceStable(bucket, func(i, j int) bool {
+			left := findingScore(bucket[i])
+			right := findingScore(bucket[j])
+			if left == right {
+				return bucket[i].Problem < bucket[j].Problem
+			}
+			return left > right
+		})
+		groups = append(groups, themeFindingGroup{
+			title:    title,
+			findings: bucket,
+		})
+	}
+
+	sort.SliceStable(groups, func(i, j int) bool {
+		if len(groups[i].findings) == len(groups[j].findings) {
+			left := findingScore(groups[i].findings[0])
+			right := findingScore(groups[j].findings[0])
+			if left == right {
+				return groups[i].title < groups[j].title
+			}
+			return left > right
+		}
+		return len(groups[i].findings) > len(groups[j].findings)
+	})
+
+	return groups
+}
+
+func normalizeFindingsSeverity(findings []domain.Finding) []domain.Finding {
+	normalized := make([]domain.Finding, 0, len(findings))
+	for _, finding := range findings {
+		item := finding
+		if item.Severity == domain.SeverityCritical && !hasCriticalEvidence(item) {
+			item.Severity = domain.SeverityError
+		}
+		normalized = append(normalized, item)
+	}
+	return normalized
+}
+
+func hasCriticalEvidence(finding domain.Finding) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		finding.Problem,
+		finding.WhyItIsBad,
+		finding.HowToFix,
+	}, " ")))
+	if text == "" {
+		return false
+	}
+
+	signals := []string{
+		"financial loss", "security breach", "data loss", "data corruption", "production outage",
+		"legal", "compliance", "fraud", "outage", "downtime", "core flow",
+		"финансов", "деньг", "средств", "утеч", "компрометац", "неавториз",
+		"потер", "поврежден", "коррупц", "недоступ", "простой", "комплаенс",
+		"регулятор", "невозможно реализовать", "невозможно безопасно реализовать",
+	}
+	for _, signal := range signals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func deduplicateFindingsByTheme(findings []domain.Finding) []domain.Finding {
+	result := make([]domain.Finding, 0, len(findings))
+	bestByKey := make(map[string]domain.Finding, len(findings))
+	for _, finding := range findings {
+		key := reviewshape.IssueFingerprint(finding)
+		existing, exists := bestByKey[key]
+		if !exists || issueSelectionScore(finding) > issueSelectionScore(existing) {
+			bestByKey[key] = finding
+		}
+	}
+
+	keys := make([]string, 0, len(bestByKey))
+	for key := range bestByKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		result = append(result, bestByKey[key])
+	}
+	return result
+}
+
+func limitFindingsPerTheme(findings []domain.Finding) []domain.Finding {
+	grouped := groupFindingsByTheme(findings)
+	result := make([]domain.Finding, 0, len(findings))
+	for _, group := range grouped {
+		limit := minAnalysisInt(len(group.findings), maxFindingsPerTheme)
+		result = append(result, group.findings[:limit]...)
+	}
+	return result
+}
+
+func limitTotalFindings(findings []domain.Finding, mode domain.AnalysisMode) []domain.Finding {
+	limit := maxFindingsFullReview
+	if mode == domain.AnalysisModeIncrementalReview {
+		limit = maxFindingsIncremental
+	}
+	if len(findings) <= limit {
+		return findings
+	}
+	return findings[:limit]
+}
+
 func memoryFindingKey(finding domain.Finding) string {
 	return strings.ToLower(strings.TrimSpace(finding.Role)) + "|" +
 		strings.ToLower(strings.TrimSpace(finding.Category)) + "|" +
 		normalizeMemoryProblem(finding.Problem) + "|" +
 		normalizeKeyPart(finding.SectionID) + "|" +
 		normalizeKeyPart(finding.SectionTitle)
+}
+
+func memoryIssueKey(finding domain.Finding) string {
+	fingerprint := reviewshape.IssueFingerprint(finding)
+	if strings.Contains(fingerprint, "|") {
+		return memoryFindingKey(finding)
+	}
+
+	sectionKey := normalizeKeyPart(finding.SectionID)
+	if sectionKey == "" {
+		sectionKey = normalizeKeyPart(finding.SectionTitle)
+	}
+	return fingerprint + "|" + sectionKey
 }
 
 func findingScore(finding domain.Finding) int {
@@ -754,6 +944,58 @@ func findingScore(finding domain.Finding) int {
 	}
 
 	return score
+}
+
+func findingThemeBucketKey(finding domain.Finding) string {
+	switch reviewshape.IssueFingerprint(finding) {
+	case "refund_threshold", "partial_refund_rules":
+		return "refund"
+	case "reason_dictionary_rules":
+		return "reason"
+	case "concurrency_case_assignment":
+		return "concurrency"
+	case "audit_consistency", "audit_access_control":
+		return "audit"
+	case "billing_idempotency":
+		return "idempotency"
+	case "loading_empty_error_states":
+		return "ux_states"
+	case "notification_retry":
+		return "notifications"
+	case "sla_slo_requirements":
+		return "sla"
+	case "report_export_rules":
+		return "reports"
+	case "queue_access_control", "roles_and_permissions":
+		return "access"
+	}
+	switch finding.Category {
+	case "technical_risk", "scalability_risk", "devops_risk":
+		return "technical"
+	case "security_risk":
+		return "security"
+	case "api_problem":
+		return "api"
+	case "ux_problem", "frontend_risk":
+		return "ux"
+	case "ambiguity":
+		return "ambiguity"
+	case "contradiction":
+		return "contradiction"
+	default:
+		return "missing"
+	}
+}
+
+func findingThemeTitle(finding domain.Finding) string {
+	return reviewshape.ThemeTitle(finding)
+}
+
+func minAnalysisInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func deriveReviewKey(source domain.DocumentSource, contextKey, externalID, name string) string {
@@ -787,6 +1029,10 @@ func resolveTargetSections(sections []domain.DocumentSection, targetSectionID, t
 			continue
 		}
 		if normalizedTitle != "" && normalizeKeyPart(section.Title) == normalizedTitle {
+			selected = append(selected, section)
+			continue
+		}
+		if normalizedTitle != "" && strings.HasPrefix(normalizeKeyPart(section.Title), normalizedTitle+"_") {
 			selected = append(selected, section)
 		}
 	}
@@ -845,6 +1091,14 @@ func normalizeMemoryProblem(value string) string {
 		filtered = filtered[:10]
 	}
 	return strings.Join(filtered, "_")
+}
+
+func issueSelectionScore(finding domain.Finding) int {
+	score := findingScore(finding)
+	if preferred := reviewshape.PreferredRole(reviewshape.IssueFingerprint(finding)); preferred != "" && strings.TrimSpace(finding.Role) == preferred {
+		score += 80
+	}
+	return score
 }
 
 func parsedChunkDescriptor(parsed parser.ParsedDocument, idx int) parser.ParsedChunk {
