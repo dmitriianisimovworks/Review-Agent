@@ -1,11 +1,12 @@
 package service
 
 import (
-	"sort"
 	"regexp"
+	"sort"
 	"strings"
 
 	"technical-specification-review-agent/internal/domain"
+	"technical-specification-review-agent/internal/reviewshape"
 )
 
 const (
@@ -74,6 +75,7 @@ func buildReviewMemory(reviewKey string, analyses []domain.Analysis) domain.Revi
 	memory.PriorSummaries = summarizeStrings(summaries)
 	memory.KnownFindings = compactMemoryFindings(knownFindings)
 	memory.ArchitecturalNotes = summarizeStrings(architectureNotes)
+	memory.ConsistencyHints = buildConsistencyHints(memory.KnownFindings, analyses)
 	return memory
 }
 
@@ -122,7 +124,7 @@ func deduplicateMemoryFindings(findings []domain.Finding) []domain.Finding {
 	result := make([]domain.Finding, 0, len(findings))
 	seen := make(map[string]struct{}, len(findings))
 	for _, finding := range findings {
-		key := memoryFindingKey(finding)
+		key := memoryIssueKey(finding)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -130,6 +132,49 @@ func deduplicateMemoryFindings(findings []domain.Finding) []domain.Finding {
 		result = append(result, finding)
 	}
 	return result
+}
+
+func buildConsistencyHints(findings []domain.Finding, analyses []domain.Analysis) []string {
+	hints := make([]string, 0, 4)
+	seen := map[string]struct{}{}
+
+	appendHint := func(value string) {
+		value = safeTruncate(strings.TrimSpace(value), 180)
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		hints = append(hints, value)
+	}
+
+	for _, finding := range findings {
+		switch reviewshape.IssueFingerprint(finding) {
+		case "refund_threshold", "partial_refund_rules", "reason_dictionary_rules", "billing_idempotency", "concurrency_case_assignment", "sla_slo_requirements", "report_export_rules", "roles_and_permissions":
+			appendHint(finding.Problem)
+		}
+		if len(hints) >= 4 {
+			return hints
+		}
+	}
+
+	for _, analysis := range analyses {
+		summary := strings.TrimSpace(analysis.Summary)
+		if summary == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(summary), "противореч") || strings.Contains(strings.ToLower(summary), "несоглас") {
+			appendHint(summary)
+		}
+		if len(hints) >= 4 {
+			break
+		}
+	}
+
+	return hints
 }
 
 func summarizeStrings(values []string) []string {

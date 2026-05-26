@@ -97,3 +97,34 @@ func TestBuildSummaryMergesConcurrencyIntoSingleTheme(t *testing.T) {
 		t.Fatalf("expected concurrency theme once in summary, got %q", summary)
 	}
 }
+
+func TestShapeFinalFindingsPrefersQAOwnerForReasonDictionaryRules(t *testing.T) {
+	t.Parallel()
+
+	findings := []domain.Finding{
+		{
+			Role:       string(domain.ReviewerRoleSolutionArchitect),
+			Category:   "missing_requirement",
+			Severity:   domain.SeverityWarning,
+			Problem:    "Не определено, для каких действий обязательна причина из справочника.",
+			WhyItIsBad: "Это приводит к неоднородной реализации.",
+			HowToFix:   "Явно указать список действий.",
+		},
+		{
+			Role:       string(domain.ReviewerRoleQAReviewer),
+			Category:   "ambiguity",
+			Severity:   domain.SeverityWarning,
+			Problem:    "Не указано, для каких конкретно действий обязательна причина из справочника.",
+			WhyItIsBad: "Нельзя однозначно проверить сценарии валидации.",
+			HowToFix:   "Перечислить действия и правила валидации.",
+		},
+	}
+
+	shaped := shapeFinalFindings(findings, domain.AnalysisModeFullReview)
+	if len(shaped) != 1 {
+		t.Fatalf("expected 1 shaped finding, got %d", len(shaped))
+	}
+	if shaped[0].Role != string(domain.ReviewerRoleQAReviewer) {
+		t.Fatalf("expected QA finding to win ownership, got role %q", shaped[0].Role)
+	}
+}

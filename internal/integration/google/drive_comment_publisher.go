@@ -3,7 +3,6 @@ package google
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
 	"time"
 
@@ -50,14 +49,6 @@ func (p *DriveCommentPublisher) Publish(ctx context.Context, documentExternalID 
 		if err != nil {
 			return nil, fmt.Errorf("create drive comment: %w", err)
 		}
-		log.Printf(
-			"drive comment published: document_id=%q type=%q requested_anchor_line=%v returned_anchor=%q quoted=%q",
-			documentExternalID,
-			draft.Type,
-			draft.AnchorLine,
-			created.Anchor,
-			draft.QuotedContent,
-		)
 		published = append(published, PublishedComment{ID: created.Id, Type: draft.Type})
 	}
 

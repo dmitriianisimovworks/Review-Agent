@@ -201,7 +201,9 @@ func roleInstructions(role domain.ReviewerRole) string {
 - не дублируй backend locking/audit/security замечания без явного frontend-impact.`)
 	case domain.ReviewerRoleMobileLead:
 		return strings.TrimSpace(`
-- смотри на mobile-specific сценарии: offline mode, unstable network, battery-sensitive flows и background behavior;
+- смотри только на явно mobile-specific сценарии: offline mode, unstable network, battery-sensitive flows, background behavior, device constraints;
+- поднимай finding только если в тексте явно есть mobile/app/client/device/offline/network signal или пользовательский flow действительно предназначен для мобильных клиентов;
+- не придумывай mobile/offline требования для внутренних admin/support/backoffice flows, если mobile-клиент в тексте не упомянут;
 - ищи проблемы синхронизации состояния, загрузки больших списков, пагинации и кеширования на мобильных клиентах;
 - отмечай риски слабой адаптации UX под мобильные ограничения и недостающие mobile edge cases;
 - если в тексте нет прямого mobile-specific риска, верни пустой findings;
@@ -209,12 +211,12 @@ func roleInstructions(role domain.ReviewerRole) string {
 - допустимые темы для Mobile Lead: offline, unstable network, sync conflicts, mobile pagination, caching on device, background behavior, battery/network constraints, mobile responsiveness.`)
 	case domain.ReviewerRoleDevOpsReviewer:
 		return strings.TrimSpace(`
-- смотри на deployment, observability, backup/recovery и эксплуатационные риски;
-- ищи gaps в monitoring, alerting, секретах, конфигурации, SLA и отказоустойчивости;
+- смотри только на deployment, observability, backup/recovery, external dependencies и эксплуатационные риски;
+- ищи gaps в monitoring, alerting, runbooks, секретах, конфигурации, SLA/SLO и отказоустойчивости;
 - отмечай риски частичной деградации и проблемные зависимости от внешних систем;
 - не описывай общие product или UX gaps без прямого ops/runtime impact;
-- не поднимай retry, concurrency, data consistency или idempotency как DevOps-замечание, если в тексте нет явной связи с runtime, monitoring, incident response или recovery;
-- не поднимай вопросы ролей, UX или бизнес-логики, если нет явной связи с runtime, observability, deploy или ops.`)
+- не поднимай audit, retry, concurrency, data consistency или idempotency как DevOps-замечание, если в тексте нет явной связи с runtime, monitoring, incident response, delivery pipeline или recovery;
+- не поднимай вопросы ролей, UX, mobile или бизнес-логики, если нет явной связи с runtime, observability, deploy, external integrations или ops.`)
 	case domain.ReviewerRoleQAReviewer:
 		return strings.TrimSpace(`
 - смотри на тестируемость, acceptance criteria, edge cases и error flows;
@@ -277,6 +279,13 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		}
 	}
 
+	if hints := limitStrings(memory.ConsistencyHints, 2); len(hints) > 0 {
+		parts = append(parts, "Потенциальные точки для проверки на противоречия:")
+		for idx, hint := range hints {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, hint))
+		}
+	}
+
 	if modules := limitStrings(memory.Modules, 2); len(modules) > 0 {
 		parts = append(parts, "Известные модули/разделы:")
 		for idx, module := range modules {
@@ -298,7 +307,7 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		}
 	}
 
-	parts = append(parts, "Учитывай этот контекст как память документа и не повторяй дословно уже известные замечания без новой ценности.")
+	parts = append(parts, "Учитывай этот контекст как память документа: не повторяй дословно уже известные замечания без новой ценности и проверяй, не противоречит ли текущий фрагмент известным решениям, ролям, модулям и прошлым findings.")
 	return strings.Join(parts, "\n") + "\n"
 }
 

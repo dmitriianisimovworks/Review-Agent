@@ -10,16 +10,28 @@ func IssueFingerprint(finding domain.Finding) string {
 	text := normalizedIssueText(finding)
 
 	switch {
-	case hasAll(text, "threshold") && hasAny(text, "refund", "возврат"):
+	case hasAny(text, "threshold", "порог") && hasAny(text, "refund", "возврат"):
 		return "refund_threshold"
 	case hasAll(text, "partial", "refund") || hasAll(text, "частич", "возврат"):
 		return "partial_refund_rules"
+	case hasAny(text, "справочник", "dictionary", "reason", "причин") && hasAny(text, "обязат", "mandatory", "required", "действ", "action"):
+		return "reason_dictionary_rules"
 	case hasAny(text, "конкур", "одноврем", "race", "atomic", "lock", "блокиров", "захват") && hasAny(text, "кейс", "case", "queue", "очеред"):
 		return "concurrency_case_assignment"
 	case hasAny(text, "audit", "истори") && hasAny(text, "идемпотент", "консистент", "атомар", "дублир", "транзак"):
 		return "audit_consistency"
 	case hasAny(text, "audit", "истори") && hasAny(text, "auth", "authoriz", "rbac", "неавториз", "permission", "privilege", "привил"):
 		return "audit_access_control"
+	case hasAny(text, "идемпотент", "idempot") && hasAny(text, "bill", "billing", "subscription", "подпис", "инвойс", "invoice", "payment", "платеж"):
+		return "billing_idempotency"
+	case hasAny(text, "load", "loading", "empty", "error", "ошиб", "пуст", "загруз") && hasAny(text, "ui", "ux", "интерф", "screen", "state", "состояни"):
+		return "loading_empty_error_states"
+	case hasAny(text, "retry", "повтор", "повторн", "redelivery", "backoff") && hasAny(text, "notification", "notify", "уведом", "webhook", "delivery", "доставк"):
+		return "notification_retry"
+	case hasAny(text, "sla", "slo", "latency", "uptime", "доступност", "deadline") && hasAny(text, "monitor", "alert", "метрик", "контрол", "эскалац", "violation"):
+		return "sla_slo_requirements"
+	case hasAny(text, "export", "report", "csv", "xlsx", "отчет", "выгруз", "экспорт"):
+		return "report_export_rules"
 	case hasAny(text, "queue", "кейс", "case", "очеред") && hasAny(text, "auth", "authoriz", "rbac", "неавториз", "permission", "privilege", "привил"):
 		return "queue_access_control"
 	case hasAny(text, "роль", "прав", "permission", "privilege", "rbac", "authoriz", "auth") && hasAny(text, "user", "пользоват", "rbac", "authoriz", "auth"):
@@ -33,10 +45,22 @@ func ThemeTitle(finding domain.Finding) string {
 	switch IssueFingerprint(finding) {
 	case "refund_threshold", "partial_refund_rules":
 		return "Refund и финансовые операции"
+	case "reason_dictionary_rules":
+		return "Причины и справочники действий"
 	case "concurrency_case_assignment":
 		return "Конкурентный доступ и блокировки"
 	case "audit_consistency", "audit_access_control":
 		return "Аудит и история изменений"
+	case "billing_idempotency":
+		return "Идемпотентность и биллинг"
+	case "loading_empty_error_states":
+		return "UX и состояния интерфейса"
+	case "notification_retry":
+		return "Уведомления и retry"
+	case "sla_slo_requirements":
+		return "SLA, SLO и эксплуатационные требования"
+	case "report_export_rules":
+		return "Отчёты и экспорт"
 	case "queue_access_control", "roles_and_permissions":
 		return "Роли и права доступа"
 	}
@@ -65,10 +89,22 @@ func PreferredRole(fingerprint string) string {
 		return string(domain.ReviewerRoleTechLead)
 	case "partial_refund_rules":
 		return string(domain.ReviewerRoleSeniorBackendEngineer)
+	case "reason_dictionary_rules":
+		return string(domain.ReviewerRoleQAReviewer)
 	case "concurrency_case_assignment":
 		return string(domain.ReviewerRoleSeniorBackendEngineer)
 	case "audit_consistency":
 		return string(domain.ReviewerRoleSeniorBackendEngineer)
+	case "billing_idempotency":
+		return string(domain.ReviewerRoleSeniorBackendEngineer)
+	case "loading_empty_error_states":
+		return string(domain.ReviewerRoleSeniorFrontendEngineer)
+	case "notification_retry":
+		return string(domain.ReviewerRoleDevOpsReviewer)
+	case "sla_slo_requirements":
+		return string(domain.ReviewerRoleDevOpsReviewer)
+	case "report_export_rules":
+		return string(domain.ReviewerRoleQAReviewer)
 	case "audit_access_control", "queue_access_control", "roles_and_permissions":
 		return string(domain.ReviewerRoleSecurityLead)
 	default:

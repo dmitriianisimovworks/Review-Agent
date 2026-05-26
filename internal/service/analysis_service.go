@@ -723,13 +723,13 @@ func filterFindingsByMode(findings []domain.Finding, memory domain.ReviewMemory,
 
 	known := make(map[string]domain.Finding, len(memory.KnownFindings))
 	for _, finding := range memory.KnownFindings {
-		known[memoryFindingKey(finding)] = finding
+		known[memoryIssueKey(finding)] = finding
 	}
 
 	filtered := make([]domain.Finding, 0, len(findings))
 	suppressedCount := 0
 	for _, finding := range findings {
-		existing, exists := known[memoryFindingKey(finding)]
+		existing, exists := known[memoryIssueKey(finding)]
 		if !exists {
 			filtered = append(filtered, finding)
 			continue
@@ -891,6 +891,19 @@ func memoryFindingKey(finding domain.Finding) string {
 		normalizeKeyPart(finding.SectionTitle)
 }
 
+func memoryIssueKey(finding domain.Finding) string {
+	fingerprint := reviewshape.IssueFingerprint(finding)
+	if strings.Contains(fingerprint, "|") {
+		return memoryFindingKey(finding)
+	}
+
+	sectionKey := normalizeKeyPart(finding.SectionID)
+	if sectionKey == "" {
+		sectionKey = normalizeKeyPart(finding.SectionTitle)
+	}
+	return fingerprint + "|" + sectionKey
+}
+
 func findingScore(finding domain.Finding) int {
 	score := 0
 	switch finding.Severity {
@@ -924,10 +937,22 @@ func findingThemeBucketKey(finding domain.Finding) string {
 	switch reviewshape.IssueFingerprint(finding) {
 	case "refund_threshold", "partial_refund_rules":
 		return "refund"
+	case "reason_dictionary_rules":
+		return "reason"
 	case "concurrency_case_assignment":
 		return "concurrency"
 	case "audit_consistency", "audit_access_control":
 		return "audit"
+	case "billing_idempotency":
+		return "idempotency"
+	case "loading_empty_error_states":
+		return "ux_states"
+	case "notification_retry":
+		return "notifications"
+	case "sla_slo_requirements":
+		return "sla"
+	case "report_export_rules":
+		return "reports"
 	case "queue_access_control", "roles_and_permissions":
 		return "access"
 	}

@@ -153,6 +153,36 @@ func TestBuildSummaryDraftsUsesUnifiedThemeGrouping(t *testing.T) {
 	}
 }
 
+func TestBuildSummaryDraftsDeduplicatesExamplesInsideTheme(t *testing.T) {
+	t.Parallel()
+
+	document := domain.Document{
+		NormalizedContent: "Раздел 1\n\nТекст документа.\n\nФинал документа.",
+	}
+	analysis := domain.Analysis{
+		Findings: []domain.Finding{
+			{
+				Role:     string(domain.ReviewerRoleQAReviewer),
+				Severity: domain.SeverityWarning,
+				Category: "ambiguity",
+				Problem:  "Не указано, для каких действий обязательна причина из справочника.",
+			},
+			{
+				Role:     string(domain.ReviewerRoleSeniorFrontendEngineer),
+				Severity: domain.SeverityWarning,
+				Category: "frontend_risk",
+				Problem:  "Не определено, для каких именно действий обязательна причина из справочника.",
+			},
+		},
+	}
+
+	drafts := buildSummaryDrafts(document, analysis)
+	content := drafts[0].Content
+	if strings.Count(content, "причина из справочника") != 1 {
+		t.Fatalf("expected one summarized example for reason dictionary theme, got %q", content)
+	}
+}
+
 func TestBuildRoleDraftsCreatesSingleCommentPerRole(t *testing.T) {
 	t.Parallel()
 
@@ -195,71 +225,5 @@ func TestBuildRoleDraftsCreatesSingleCommentPerRole(t *testing.T) {
 	}
 	if !strings.Contains(drafts[1].Content, "🧪 QA Reviewer") {
 		t.Fatalf("expected qa reviewer header, got %q", drafts[1].Content)
-	}
-}
-
-func TestBuildRoleDraftsPrefersSectionHeadingAnchor(t *testing.T) {
-	t.Parallel()
-
-	document := domain.Document{
-		NormalizedContent: "4.2 Case Review\n\nПользователь может выполнить одно из действий.\n\nДля части действий нужно указать причину из справочника.",
-		Sections: []domain.DocumentSection{
-			{Title: "4.2 Case Review"},
-		},
-		Blocks: []domain.DocumentBlock{
-			{Kind: "heading", Text: "4.2 Case Review", SectionTitle: "4.2 Case Review"},
-			{Kind: "paragraph", Text: "Пользователь может выполнить одно из действий.", SectionTitle: "4.2 Case Review"},
-		},
-	}
-	findings := []domain.Finding{
-		{
-			Role:         string(domain.ReviewerRoleQAReviewer),
-			Severity:     domain.SeverityWarning,
-			SectionTitle: "4.2 Case Review",
-			Problem:      "Не указано, для каких именно действий обязательна причина из справочника.",
-			WhyItIsBad:   "Нельзя однозначно проверить поведение.",
-			HowToFix:     "Добавить список действий.",
-			SourceChunk:  "Для части действий нужно указать причину из справочника.",
-		},
-	}
-
-	drafts := buildRoleDrafts(document, findings)
-	if len(drafts) != 1 {
-		t.Fatalf("expected 1 role draft, got %d", len(drafts))
-	}
-	if drafts[0].AnchorLine == nil || *drafts[0].AnchorLine != 1 {
-		t.Fatalf("expected heading anchor line 1, got %+v", drafts[0].AnchorLine)
-	}
-	if drafts[0].QuotedContent != "4.2 Case Review" {
-		t.Fatalf("expected heading quoted content, got %q", drafts[0].QuotedContent)
-	}
-}
-
-func TestBuildRoleDraftsFallsBackToSourceChunkAnchor(t *testing.T) {
-	t.Parallel()
-
-	document := domain.Document{
-		NormalizedContent: "Строка 1\n\nСтрока 2\n\nСтрока 3",
-	}
-	findings := []domain.Finding{
-		{
-			Role:        string(domain.ReviewerRoleQAReviewer),
-			Severity:    domain.SeverityWarning,
-			Problem:     "Проблема 3",
-			WhyItIsBad:  "Последствие 3",
-			HowToFix:    "Исправление 3",
-			SourceChunk: "Строка 2",
-		},
-	}
-
-	drafts := buildRoleDrafts(document, findings)
-	if len(drafts) != 1 {
-		t.Fatalf("expected 1 role draft, got %d", len(drafts))
-	}
-	if drafts[0].AnchorLine == nil || *drafts[0].AnchorLine != 3 {
-		t.Fatalf("expected source chunk anchor line 3, got %+v", drafts[0].AnchorLine)
-	}
-	if drafts[0].QuotedContent != "Строка 2" {
-		t.Fatalf("expected source chunk quote, got %q", drafts[0].QuotedContent)
 	}
 }

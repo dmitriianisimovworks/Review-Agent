@@ -59,7 +59,6 @@ func (f *DefaultFormatter) Format(document domain.Document, analysis domain.Anal
 func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draft {
 	grouped := groupFindingsByRole(findings)
 	order := domain.DefaultReviewerRoles()
-	anchors := newAnchorContext(document)
 
 	type roleDraft struct {
 		draft Draft
@@ -90,14 +89,13 @@ func buildRoleDrafts(document domain.Document, findings []domain.Finding) []Draf
 		}
 
 		topFinding := roleFindings[0]
-		anchor := resolveFindingAnchor(anchors, document, topFinding)
 		draft := Draft{
 			Type:          "inline",
 			Content:       formatRoleComment(string(role), roleFindings),
-			QuotedContent: anchor.quoted,
+			QuotedContent: quoteForComment(topFinding.SourceChunk),
 		}
-		if anchor.line != nil {
-			draft.AnchorLine = anchor.line
+		if line := findAnchorLine(document.NormalizedContent, topFinding.SourceChunk); line != nil {
+			draft.AnchorLine = line
 		}
 		collected = append(collected, roleDraft{draft: draft, score: roleSeverityScore(roleFindings)})
 	}
@@ -435,17 +433,32 @@ func groupFindingsByTheme(findings []domain.Finding) []themeGroup {
 }
 
 func formatThemeGroup(group themeGroup) string {
-	examples := make([]string, 0, min(len(group.Findings), maxThemeExamples))
-	limit := min(len(group.Findings), maxThemeExamples)
+	unique := uniqueThemeFindings(group.Findings)
+	examples := make([]string, 0, min(len(unique), maxThemeExamples))
+	limit := min(len(unique), maxThemeExamples)
 	for i := 0; i < limit; i++ {
-		examples = append(examples, shortProblem(group.Findings[i].Problem))
+		examples = append(examples, shortProblem(unique[i].Problem))
 	}
 
 	line := fmt.Sprintf("- %s: %s.", group.Title, strings.Join(examples, "; "))
-	if len(group.Findings) > limit {
-		line += fmt.Sprintf(" Ещё %d замеч. в этой теме.", len(group.Findings)-limit)
+	if len(unique) > limit {
+		line += fmt.Sprintf(" Ещё %d замеч. в этой теме.", len(unique)-limit)
 	}
 	return line
+}
+
+func uniqueThemeFindings(findings []domain.Finding) []domain.Finding {
+	result := make([]domain.Finding, 0, len(findings))
+	seen := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		key := reviewshape.IssueFingerprint(finding)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, finding)
+	}
+	return result
 }
 
 func shortProblem(problem string) string {
