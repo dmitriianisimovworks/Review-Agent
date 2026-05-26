@@ -286,6 +286,13 @@ func formatMemorySection(memory domain.ReviewMemory, role domain.ReviewerRole) s
 		}
 	}
 
+	if hints := limitStrings(memory.VectorHints, 2); len(hints) > 0 {
+		parts = append(parts, "Похожие сигналы из векторной памяти:")
+		for idx, hint := range hints {
+			parts = append(parts, fmt.Sprintf("%d. %s", idx+1, hint))
+		}
+	}
+
 	if modules := limitStrings(memory.Modules, 2); len(modules) > 0 {
 		parts = append(parts, "Известные модули/разделы:")
 		for idx, module := range modules {

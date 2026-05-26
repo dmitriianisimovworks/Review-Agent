@@ -127,6 +127,7 @@ func New() (*App, error) {
 		embedder := vector.NewOpenRouterEmbedder(cfg.Vector)
 		store := vector.NewQdrantStore(cfg.Vector)
 		analysisService.SetVectorIndexer(service.NewVectorIndexer(embedder, store))
+		analysisService.SetVectorRetriever(service.NewVectorRetriever(embedder, store))
 	}
 	commentService := service.NewCommentService(
 		documentRepo,

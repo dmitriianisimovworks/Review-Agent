@@ -23,12 +23,19 @@ func (s *stubEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]float3
 }
 
 type stubVectorStore struct {
-	points []vector.Point
+	points         []vector.Point
+	searchRequests []vector.SearchRequest
+	searchResults  []vector.SearchResult
 }
 
 func (s *stubVectorStore) Upsert(_ context.Context, points []vector.Point) error {
 	s.points = append([]vector.Point(nil), points...)
 	return nil
+}
+
+func (s *stubVectorStore) Search(_ context.Context, req vector.SearchRequest) ([]vector.SearchResult, error) {
+	s.searchRequests = append(s.searchRequests, req)
+	return append([]vector.SearchResult(nil), s.searchResults...), nil
 }
 
 func TestVectorIndexerIndexesSummaryFindingsAndSections(t *testing.T) {

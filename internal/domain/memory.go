@@ -15,6 +15,7 @@ type ReviewMemory struct {
 	ArchitecturalNotes    []string
 	ArchitectureDecisions []ArchitectureDecision
 	ConsistencyHints      []string
+	VectorHints           []string
 	Glossary              []string
 	Entities              []string
 	Modules               []string
@@ -28,6 +29,7 @@ func (m ReviewMemory) HasContext() bool {
 		len(m.ArchitecturalNotes) > 0 ||
 		len(m.ArchitectureDecisions) > 0 ||
 		len(m.ConsistencyHints) > 0 ||
+		len(m.VectorHints) > 0 ||
 		len(m.Glossary) > 0 ||
 		len(m.Entities) > 0 ||
 		len(m.Modules) > 0 ||

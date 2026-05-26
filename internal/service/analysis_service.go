@@ -35,6 +35,7 @@ type AnalysisService struct {
 	reviewConfig     reviewconfig.Provider
 	jobRunner        jobs.Runner
 	vectorIndexer    AnalysisVectorIndexer
+	vectorRetriever  AnalysisVectorRetriever
 }
 
 const (
@@ -87,6 +88,10 @@ func NewAnalysisService(
 
 func (s *AnalysisService) SetVectorIndexer(indexer AnalysisVectorIndexer) {
 	s.vectorIndexer = indexer
+}
+
+func (s *AnalysisService) SetVectorRetriever(retriever AnalysisVectorRetriever) {
+	s.vectorRetriever = retriever
 }
 
 func (s *AnalysisService) StartAnalysis(ctx context.Context, input StartAnalysisInput) (domain.Analysis, error) {
@@ -510,6 +515,14 @@ func (s *AnalysisService) prepareAnalysisDocument(
 	})
 	if err != nil {
 		return domain.Document{}, parser.ParsedDocument{}, domain.ReviewMemory{}, apperrors.Wrap(apperrors.KindInternal, "failed to parse document", err)
+	}
+	if settings.MemoryEnabled && s.vectorRetriever != nil {
+		enrichedMemory, retrievalErr := s.vectorRetriever.EnrichMemory(ctx, document, parsed, promptMemory)
+		if retrievalErr != nil {
+			log.Printf("vector retrieval failed: review_key=%q err=%v", document.ReviewKey, retrievalErr)
+		} else {
+			promptMemory = enrichedMemory
+		}
 	}
 	document.NormalizedContent = parsed.Text
 	return document, parsed, promptMemory, nil
