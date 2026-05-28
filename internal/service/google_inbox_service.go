@@ -19,6 +19,8 @@ const inboxProcessingComment = "Принял документ на провер�
 const inboxProgressComment = "Анализ продолжается. Формирую итоговые замечания и summary."
 const inboxFullCommandAcceptedComment = "Команда принята. Запускаю полный review всего документа."
 const inboxIncrementalCommandAcceptedComment = "Команда принята. Запускаю incremental review с учетом предыдущего контекста."
+const inboxCleanupCommandAcceptedComment = "Команда принята. Удаляю комментарии агента в документе."
+const inboxCleanupCompletedComment = "Комментарии агента удалены."
 const inboxAlreadyProcessingComment = "Документ уже находится в обработке. Дождитесь завершения текущего review."
 
 const inboxProgressCommentDelay = 20 * time.Second
@@ -29,10 +31,12 @@ const (
 	reviewAgentCommandFull               = "full"
 	reviewAgentCommandIncremental        = "incremental"
 	reviewAgentCommandIncrementalSection = "incremental section:"
+	reviewAgentCommandCleanup            = "cleanup"
 )
 
 type reviewAgentCommand struct {
 	commentID          string
+	kind               string
 	mode               domain.AnalysisMode
 	targetSectionTitle string
 	createdAt          time.Time
@@ -269,6 +273,15 @@ func (s *GoogleInboxService) processCommandComments(ctx context.Context, files [
 		if _, err := s.publishServiceComment(ctx, file.ID, commandAcceptedComment(command)); err != nil {
 			log.Printf("google inbox: document_id=%q publish processing comment: %v", file.ID, err)
 		}
+		if command.kind == reviewAgentCommandCleanup {
+			if err := s.cleanupAgentComments(ctx, file.ID); err != nil {
+				return err
+			}
+			if _, err := s.publishServiceComment(ctx, file.ID, inboxCleanupCompletedComment); err != nil {
+				log.Printf("google inbox: document_id=%q publish cleanup-completed comment: %v", file.ID, err)
+			}
+			continue
+		}
 		if err := s.validateCommandTargetSection(ctx, file, command); err != nil {
 			if _, publishErr := s.publishServiceComment(ctx, file.ID, fmt.Sprintf("Команда принята, но раздел %s не найден в структуре документа.", strings.TrimSpace(command.targetSectionTitle))); publishErr != nil {
 				log.Printf("google inbox: document_id=%q publish section-not-found comment: %v", file.ID, publishErr)
@@ -470,11 +483,13 @@ func parseReviewAgentCommand(commentID, content string, createdAtUnixNano int64)
 	createdAt := time.Unix(0, createdAtUnixNano).UTC()
 	switch {
 	case commandText == "":
-		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
+		return reviewAgentCommand{commentID: commentID, kind: reviewAgentCommandFull, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
 	case commandText == reviewAgentCommandFull:
-		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
+		return reviewAgentCommand{commentID: commentID, kind: reviewAgentCommandFull, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
+	case commandText == reviewAgentCommandCleanup:
+		return reviewAgentCommand{commentID: commentID, kind: reviewAgentCommandCleanup, createdAt: createdAt}, true
 	case commandText == reviewAgentCommandIncremental:
-		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeIncrementalReview, createdAt: createdAt}, true
+		return reviewAgentCommand{commentID: commentID, kind: reviewAgentCommandIncremental, mode: domain.AnalysisModeIncrementalReview, createdAt: createdAt}, true
 	case strings.HasPrefix(commandText, reviewAgentCommandIncrementalSection):
 		section := strings.TrimSpace(strings.TrimPrefix(commandText, reviewAgentCommandIncrementalSection))
 		if section == "" {
@@ -482,6 +497,7 @@ func parseReviewAgentCommand(commentID, content string, createdAtUnixNano int64)
 		}
 		return reviewAgentCommand{
 			commentID:          commentID,
+			kind:               reviewAgentCommandIncrementalSection,
 			mode:               domain.AnalysisModeIncrementalReview,
 			targetSectionTitle: section,
 			createdAt:          createdAt,
@@ -519,6 +535,9 @@ func reviewKeyForGoogleDoc(documentExternalID string) string {
 }
 
 func commandAcceptedComment(command reviewAgentCommand) string {
+	if command.kind == reviewAgentCommandCleanup {
+		return inboxCleanupCommandAcceptedComment
+	}
 	if command.mode == domain.AnalysisModeFullReview {
 		return inboxFullCommandAcceptedComment
 	}

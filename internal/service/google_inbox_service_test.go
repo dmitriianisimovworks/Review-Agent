@@ -310,6 +310,115 @@ func TestGoogleInboxServiceCleansUpAgentCommentsBeforeCommandRun(t *testing.T) {
 	}
 }
 
+func TestGoogleInboxServiceCleanupCommandDeletesAgentCommentsWithoutStartingAnalysis(t *testing.T) {
+	documentRepo := &stubDocumentRepo{
+		got: domain.Document{
+			ID:         "doc_existing",
+			Source:     domain.DocumentSourceGoogleDocs,
+			ExternalID: "google-doc-1",
+			ReviewKey:  "google_docs:google-doc-1",
+			Name:       "Billing Spec",
+		},
+	}
+	analysisRepo := &stubAnalysisRepo{
+		prior: []domain.Analysis{{
+			ID:        "analysis_prev",
+			CreatedAt: time.Now().Add(-time.Hour),
+			Status:    domain.AnalysisStatusCompleted,
+		}},
+	}
+	jobRunner := &stubJobRunner{}
+	publisher := &stubCommentPublisher{
+		publishIDs: []string{"service-1", "service-2"},
+	}
+	commentReader := stubCommentReader{
+		comments: map[string][]google.Comment{
+			"google-doc-1": {
+				{
+					ID:         "user-command",
+					Content:    "@review-agent cleanup",
+					CreatedAt:  time.Now().UTC().UnixNano(),
+					AuthorIsMe: false,
+				},
+				{
+					ID:         "agent-summary",
+					Content:    "Итоговый комментарий",
+					CreatedAt:  time.Now().Add(-time.Minute).UTC().UnixNano(),
+					AuthorIsMe: true,
+				},
+				{
+					ID:         "agent-role",
+					Content:    "🧭 Tech Lead",
+					CreatedAt:  time.Now().Add(-time.Minute).UTC().UnixNano(),
+					AuthorIsMe: true,
+				},
+			},
+		},
+	}
+
+	analysisService := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		&recordingLLMClient{},
+		nil,
+		publisher,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{settings: reviewconfig.Settings{}},
+		jobRunner,
+	)
+	commentService := NewCommentService(
+		documentRepo,
+		analysisRepo,
+		&recordingFormatter{},
+		publisher,
+		stubReviewConfigProvider{settings: reviewconfig.Settings{
+			InlineComments:  true,
+			SummaryComments: true,
+		}},
+	)
+
+	inbox := NewGoogleInboxService(
+		"folder",
+		time.Minute,
+		stubFolderWatcher{files: []google.DriveFile{{
+			ID:          "google-doc-1",
+			Name:        "Billing Spec",
+			DocumentURL: "https://docs.google.com/document/d/google-doc-1/edit",
+		}}},
+		nil,
+		documentRepo,
+		analysisService,
+		commentService,
+		commentReader,
+		publisher,
+	)
+
+	if err := inbox.tick(context.Background()); err != nil {
+		t.Fatalf("tick() error = %v", err)
+	}
+	if len(jobRunner.enqueued) != 0 {
+		t.Fatalf("expected no enqueued analysis, got %+v", jobRunner.enqueued)
+	}
+	if publisher.deletedDocumentID != "google-doc-1" {
+		t.Fatalf("expected cleanup for google-doc-1, got %q", publisher.deletedDocumentID)
+	}
+	if len(publisher.deletedCommentIDs) != 2 {
+		t.Fatalf("expected two agent comments to be deleted, got %+v", publisher.deletedCommentIDs)
+	}
+	if len(publisher.publishedBatches) != 2 {
+		t.Fatalf("expected two service publish batches, got %d", len(publisher.publishedBatches))
+	}
+	if got := publisher.publishedBatches[0][0].Content; got != inboxCleanupCommandAcceptedComment {
+		t.Fatalf("expected cleanup ack comment, got %q", got)
+	}
+	if got := publisher.publishedBatches[1][0].Content; got != inboxCleanupCompletedComment {
+		t.Fatalf("expected cleanup completed comment, got %q", got)
+	}
+}
+
 func TestGoogleInboxServicePublishesAlreadyProcessingCommentForCommand(t *testing.T) {
 	documentRepo := &stubDocumentRepo{
 		got: domain.Document{
