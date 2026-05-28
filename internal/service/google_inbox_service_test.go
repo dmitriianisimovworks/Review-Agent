@@ -12,11 +12,16 @@ import (
 )
 
 type stubFolderWatcher struct {
-	files []google.DriveFile
+	files           []google.DriveFile
+	accessibleFiles []google.DriveFile
 }
 
 func (w stubFolderWatcher) ListDocuments(context.Context, string) ([]google.DriveFile, error) {
 	return w.files, nil
+}
+
+func (w stubFolderWatcher) ListAccessibleDocuments(context.Context) ([]google.DriveFile, error) {
+	return w.accessibleFiles, nil
 }
 
 type stubCommentReader struct {
@@ -64,7 +69,7 @@ func TestGoogleInboxServicePublishesDelayedProgressComment(t *testing.T) {
 		}},
 	)
 
-	inbox := NewGoogleInboxService("folder", time.Minute, stubFolderWatcher{}, documentRepo, analysisService, commentService, stubCommentReader{}, publisher)
+	inbox := NewGoogleInboxService("folder", time.Minute, stubFolderWatcher{}, nil, documentRepo, analysisService, commentService, stubCommentReader{}, publisher)
 	inbox.pending["analysis_1"] = inboxPendingAnalysis{
 		documentExternalID: "google-doc-1",
 		startedAt:          time.Now().Add(-inboxProgressCommentDelay - time.Second),
@@ -165,6 +170,7 @@ func TestGoogleInboxServiceQueuesIncrementalSectionCommandFromComment(t *testing
 			Name:        "Billing Spec",
 			DocumentURL: "https://docs.google.com/document/d/google-doc-1/edit",
 		}}},
+		nil,
 		documentRepo,
 		analysisService,
 		commentService,
@@ -277,6 +283,7 @@ func TestGoogleInboxServiceCleansUpAgentCommentsBeforeCommandRun(t *testing.T) {
 			Name:        "Billing Spec",
 			DocumentURL: "https://docs.google.com/document/d/google-doc-1/edit",
 		}}},
+		nil,
 		documentRepo,
 		analysisService,
 		commentService,
@@ -365,6 +372,7 @@ func TestGoogleInboxServicePublishesAlreadyProcessingCommentForCommand(t *testin
 			Name:        "Billing Spec",
 			DocumentURL: "https://docs.google.com/document/d/google-doc-1/edit",
 		}}},
+		nil,
 		documentRepo,
 		analysisService,
 		commentService,
@@ -468,6 +476,7 @@ func TestGoogleInboxServicePublishesSectionNotFoundComment(t *testing.T) {
 			Name:        "Billing Spec",
 			DocumentURL: "https://docs.google.com/document/d/google-doc-1/edit",
 		}}},
+		nil,
 		documentRepo,
 		analysisService,
 		commentService,
@@ -486,5 +495,171 @@ func TestGoogleInboxServicePublishesSectionNotFoundComment(t *testing.T) {
 	}
 	if got := publisher.publishedBatches[1][0].Content; got != "Команда принята, но раздел 9.9 не найден в структуре документа." {
 		t.Fatalf("expected section-not-found comment, got %q", got)
+	}
+}
+
+func TestGoogleInboxServiceQueuesCommandForTrackedDocumentWithoutInboxFolder(t *testing.T) {
+	documentRepo := &stubDocumentRepo{}
+	analysisRepo := &stubAnalysisRepo{}
+	jobRunner := &stubJobRunner{}
+	publisher := &stubCommentPublisher{
+		publishIDs: []string{"service-1"},
+	}
+	commentReader := stubCommentReader{
+		comments: map[string][]google.Comment{
+			"google-doc-2": {{
+				ID:         "comment-1",
+				Content:    "@review-agent",
+				CreatedAt:  time.Now().UTC().UnixNano(),
+				AuthorIsMe: false,
+			}},
+		},
+	}
+	trackedRepo := &stubTrackedDocumentRepo{
+		entries: []domain.TrackedDocument{{
+			ID:          "tracked-1",
+			Source:      domain.DocumentSourceGoogleDocs,
+			ExternalID:  "google-doc-2",
+			Name:        "Reviewer Spec",
+			DocumentURL: "https://docs.google.com/document/d/google-doc-2/edit",
+			CreatedAt:   time.Now().Add(-time.Minute).UTC(),
+		}},
+	}
+
+	analysisService := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		&recordingLLMClient{},
+		nil,
+		publisher,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{settings: reviewconfig.Settings{}},
+		jobRunner,
+	)
+	commentService := NewCommentService(
+		documentRepo,
+		analysisRepo,
+		&recordingFormatter{},
+		publisher,
+		stubReviewConfigProvider{settings: reviewconfig.Settings{
+			InlineComments:  true,
+			SummaryComments: true,
+		}},
+	)
+
+	inbox := NewGoogleInboxService(
+		"",
+		time.Minute,
+		nil,
+		trackedRepo,
+		documentRepo,
+		analysisService,
+		commentService,
+		commentReader,
+		publisher,
+	)
+
+	if !inbox.Enabled() {
+		t.Fatalf("expected inbox to be enabled for tracked docs polling")
+	}
+	if err := inbox.tick(context.Background()); err != nil {
+		t.Fatalf("tick() error = %v", err)
+	}
+	if len(jobRunner.enqueued) != 1 {
+		t.Fatalf("expected one enqueued analysis, got %+v", jobRunner.enqueued)
+	}
+	if analysisRepo.saved.Mode != domain.AnalysisModeFullReview {
+		t.Fatalf("expected full review, got %s", analysisRepo.saved.Mode)
+	}
+	if got := analysisRepo.saved.DocumentID; got == "" {
+		t.Fatalf("expected queued analysis document id to be set")
+	}
+	if len(publisher.publishedBatches) != 1 {
+		t.Fatalf("expected one command ack publish batch, got %d", len(publisher.publishedBatches))
+	}
+	if got := publisher.publishedBatches[0][0].Content; got != inboxFullCommandAcceptedComment {
+		t.Fatalf("expected full-review ack comment, got %q", got)
+	}
+}
+
+func TestGoogleInboxServiceAutoRegistersAccessibleGoogleDocs(t *testing.T) {
+	documentRepo := &stubDocumentRepo{}
+	analysisRepo := &stubAnalysisRepo{}
+	jobRunner := &stubJobRunner{}
+	publisher := &stubCommentPublisher{
+		publishIDs: []string{"service-1"},
+	}
+	commentReader := stubCommentReader{
+		comments: map[string][]google.Comment{
+			"google-doc-3": {{
+				ID:         "comment-1",
+				Content:    "@review-agent",
+				CreatedAt:  time.Now().UTC().UnixNano(),
+				AuthorIsMe: false,
+			}},
+		},
+	}
+	trackedRepo := &stubTrackedDocumentRepo{}
+	watcher := stubFolderWatcher{
+		accessibleFiles: []google.DriveFile{{
+			ID:          "google-doc-3",
+			Name:        "Accessible Spec",
+			DocumentURL: "https://docs.google.com/document/d/google-doc-3/edit",
+		}},
+	}
+
+	analysisService := NewAnalysisService(
+		documentRepo,
+		analysisRepo,
+		stubAnalysisCache{},
+		&recordingLLMClient{},
+		nil,
+		publisher,
+		"openai_compatible",
+		"test-model",
+		config.DocumentConfig{ChunkSize: 5000, MaxChunks: 10},
+		stubReviewConfigProvider{settings: reviewconfig.Settings{}},
+		jobRunner,
+	)
+	commentService := NewCommentService(
+		documentRepo,
+		analysisRepo,
+		&recordingFormatter{},
+		publisher,
+		stubReviewConfigProvider{settings: reviewconfig.Settings{
+			InlineComments:  true,
+			SummaryComments: true,
+		}},
+	)
+
+	inbox := NewGoogleInboxService(
+		"",
+		time.Minute,
+		watcher,
+		trackedRepo,
+		documentRepo,
+		analysisService,
+		commentService,
+		commentReader,
+		publisher,
+	)
+
+	if err := inbox.tick(context.Background()); err != nil {
+		t.Fatalf("tick() error = %v", err)
+	}
+	if len(trackedRepo.entries) != 1 {
+		t.Fatalf("expected one auto-registered tracked doc, got %+v", trackedRepo.entries)
+	}
+	if trackedRepo.entries[0].ExternalID != "google-doc-3" {
+		t.Fatalf("expected tracked external id google-doc-3, got %q", trackedRepo.entries[0].ExternalID)
+	}
+	if len(jobRunner.enqueued) != 1 {
+		t.Fatalf("expected one enqueued analysis, got %+v", jobRunner.enqueued)
+	}
+	if got := publisher.publishedBatches[0][0].Content; got != inboxFullCommandAcceptedComment {
+		t.Fatalf("expected full-review ack comment, got %q", got)
 	}
 }

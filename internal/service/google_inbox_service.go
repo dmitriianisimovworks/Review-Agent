@@ -22,6 +22,7 @@ const inboxIncrementalCommandAcceptedComment = "Команда принята. �
 const inboxAlreadyProcessingComment = "Документ уже находится в обработке. Дождитесь завершения текущего review."
 
 const inboxProgressCommentDelay = 20 * time.Second
+const inboxTrackedDiscoveryInterval = 30 * time.Second
 
 const (
 	reviewAgentCommandPrefix             = "@review-agent"
@@ -48,20 +49,23 @@ type GoogleInboxService struct {
 	folderID         string
 	pollInterval     time.Duration
 	watcher          google.FolderWatcher
+	trackedRepo      repository.TrackedDocumentRepository
 	documentRepo     repository.DocumentRepository
 	analysisService  *AnalysisService
 	commentService   *CommentService
 	commentReader    google.CommentReader
 	commentPublisher google.CommentPublisher
 
-	mu      sync.Mutex
-	pending map[string]inboxPendingAnalysis
+	mu                     sync.Mutex
+	pending                map[string]inboxPendingAnalysis
+	lastTrackedDiscoveryAt time.Time
 }
 
 func NewGoogleInboxService(
 	folderID string,
 	pollInterval time.Duration,
 	watcher google.FolderWatcher,
+	trackedRepo repository.TrackedDocumentRepository,
 	documentRepo repository.DocumentRepository,
 	analysisService *AnalysisService,
 	commentService *CommentService,
@@ -72,6 +76,7 @@ func NewGoogleInboxService(
 		folderID:         strings.TrimSpace(folderID),
 		pollInterval:     pollInterval,
 		watcher:          watcher,
+		trackedRepo:      trackedRepo,
 		documentRepo:     documentRepo,
 		analysisService:  analysisService,
 		commentService:   commentService,
@@ -82,7 +87,12 @@ func NewGoogleInboxService(
 }
 
 func (s *GoogleInboxService) Enabled() bool {
-	return s != nil && s.folderID != "" && s.watcher != nil && s.analysisService != nil && s.commentService != nil && s.commentReader != nil && s.commentPublisher != nil
+	if s == nil || s.analysisService == nil || s.commentService == nil || s.commentReader == nil || s.commentPublisher == nil {
+		return false
+	}
+	hasFolderPolling := s.folderID != "" && s.watcher != nil
+	hasTrackedPolling := s.trackedRepo != nil
+	return hasFolderPolling || hasTrackedPolling
 }
 
 func (s *GoogleInboxService) Run(ctx context.Context) error {
@@ -110,18 +120,89 @@ func (s *GoogleInboxService) Run(ctx context.Context) error {
 }
 
 func (s *GoogleInboxService) tick(ctx context.Context) error {
-	files, err := s.watcher.ListDocuments(ctx, s.folderID)
+	if err := s.syncAccessibleTrackedDocuments(ctx); err != nil {
+		return err
+	}
+	folderFiles, trackedFiles, err := s.listPolledDocuments(ctx)
 	if err != nil {
 		return err
 	}
-	if err := s.enqueueNewDocuments(ctx, files); err != nil {
+	if err := s.enqueueNewDocuments(ctx, folderFiles); err != nil {
 		return err
 	}
-	if err := s.processCommandComments(ctx, files); err != nil {
+	if err := s.processCommandComments(ctx, mergeDriveFiles(folderFiles, trackedFiles)); err != nil {
 		return err
 	}
 	s.processPending(ctx)
 	return nil
+}
+
+func (s *GoogleInboxService) syncAccessibleTrackedDocuments(ctx context.Context) error {
+	if s.trackedRepo == nil {
+		return nil
+	}
+	discoveryWatcher, ok := s.watcher.(google.AccessibleDocumentWatcher)
+	if !ok || discoveryWatcher == nil {
+		return nil
+	}
+	if !s.shouldRunTrackedDiscovery() {
+		return nil
+	}
+
+	files, err := discoveryWatcher.ListAccessibleDocuments(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, file := range files {
+		if strings.TrimSpace(file.ID) == "" || strings.TrimSpace(file.DocumentURL) == "" {
+			continue
+		}
+		if err := s.trackedRepo.Save(ctx, domain.TrackedDocument{
+			ID:          fmt.Sprintf("tracked_doc_%s", strings.TrimSpace(file.ID)),
+			Source:      domain.DocumentSourceGoogleDocs,
+			ExternalID:  strings.TrimSpace(file.ID),
+			Name:        strings.TrimSpace(file.Name),
+			DocumentURL: strings.TrimSpace(file.DocumentURL),
+			CreatedAt:   now,
+		}); err != nil {
+			return err
+		}
+	}
+	s.markTrackedDiscoveryRun(now)
+	return nil
+}
+
+func (s *GoogleInboxService) listPolledDocuments(ctx context.Context) ([]google.DriveFile, []google.DriveFile, error) {
+	folderFiles := make([]google.DriveFile, 0)
+	if s.folderID != "" && s.watcher != nil {
+		files, err := s.watcher.ListDocuments(ctx, s.folderID)
+		if err != nil {
+			return nil, nil, err
+		}
+		folderFiles = files
+	}
+
+	trackedFiles := make([]google.DriveFile, 0)
+	if s.trackedRepo != nil {
+		items, err := s.trackedRepo.ListBySource(ctx, domain.DocumentSourceGoogleDocs)
+		if err != nil {
+			return nil, nil, err
+		}
+		trackedFiles = make([]google.DriveFile, 0, len(items))
+		for _, item := range items {
+			if strings.TrimSpace(item.ExternalID) == "" || strings.TrimSpace(item.DocumentURL) == "" {
+				continue
+			}
+			trackedFiles = append(trackedFiles, google.DriveFile{
+				ID:          strings.TrimSpace(item.ExternalID),
+				Name:        strings.TrimSpace(item.Name),
+				DocumentURL: strings.TrimSpace(item.DocumentURL),
+			})
+		}
+	}
+
+	return folderFiles, trackedFiles, nil
 }
 
 func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context, files []google.DriveFile) error {
@@ -161,14 +242,6 @@ func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context, files []go
 
 func (s *GoogleInboxService) processCommandComments(ctx context.Context, files []google.DriveFile) error {
 	for _, file := range files {
-		exists, err := s.documentRepo.HasBySourceAndExternalID(ctx, domain.DocumentSourceGoogleDocs, file.ID)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			continue
-		}
-
 		command, ok, err := s.loadLatestCommand(ctx, file.ID)
 		if err != nil {
 			return err
@@ -370,6 +443,18 @@ func (s *GoogleInboxService) snapshotPending() map[string]inboxPendingAnalysis {
 	return result
 }
 
+func (s *GoogleInboxService) shouldRunTrackedDiscovery() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastTrackedDiscoveryAt.IsZero() || time.Since(s.lastTrackedDiscoveryAt) >= inboxTrackedDiscoveryInterval
+}
+
+func (s *GoogleInboxService) markTrackedDiscoveryRun(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastTrackedDiscoveryAt = now
+}
+
 func parseReviewAgentCommand(commentID, content string, createdAtUnixNano int64) (reviewAgentCommand, bool) {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
@@ -384,6 +469,8 @@ func parseReviewAgentCommand(commentID, content string, createdAtUnixNano int64)
 	commandText := strings.TrimSpace(strings.TrimPrefix(lowered, reviewAgentCommandPrefix))
 	createdAt := time.Unix(0, createdAtUnixNano).UTC()
 	switch {
+	case commandText == "":
+		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
 	case commandText == reviewAgentCommandFull:
 		return reviewAgentCommand{commentID: commentID, mode: domain.AnalysisModeFullReview, createdAt: createdAt}, true
 	case commandText == reviewAgentCommandIncremental:
@@ -402,6 +489,25 @@ func parseReviewAgentCommand(commentID, content string, createdAtUnixNano int64)
 	default:
 		return reviewAgentCommand{}, false
 	}
+}
+
+func mergeDriveFiles(groups ...[]google.DriveFile) []google.DriveFile {
+	seen := make(map[string]struct{})
+	result := make([]google.DriveFile, 0)
+	for _, group := range groups {
+		for _, file := range group {
+			id := strings.TrimSpace(file.ID)
+			if id == "" {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			result = append(result, file)
+		}
+	}
+	return result
 }
 
 func isReviewAgentCommandText(content string) bool {
