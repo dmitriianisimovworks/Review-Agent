@@ -21,6 +21,10 @@ type FolderWatcher interface {
 	ListDocuments(ctx context.Context, folderID string) ([]DriveFile, error)
 }
 
+type AccessibleDocumentWatcher interface {
+	ListAccessibleDocuments(ctx context.Context) ([]DriveFile, error)
+}
+
 type DriveFolderWatcher struct {
 	driveService *drive.Service
 }
@@ -45,8 +49,26 @@ func (w *DriveFolderWatcher) ListDocuments(ctx context.Context, folderID string)
 		return nil, fmt.Errorf("list drive folder documents: %w", err)
 	}
 
-	result := make([]DriveFile, 0, len(files.Files))
-	for _, file := range files.Files {
+	return toDriveFiles(files.Files), nil
+}
+
+func (w *DriveFolderWatcher) ListAccessibleDocuments(ctx context.Context) ([]DriveFile, error) {
+	files, err := w.driveService.Files.List().
+		Q("trashed = false and mimeType = 'application/vnd.google-apps.document'").
+		Fields("files(id,name,modifiedTime)").
+		OrderBy("modifiedTime desc").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("list accessible drive documents: %w", err)
+	}
+
+	return toDriveFiles(files.Files), nil
+}
+
+func toDriveFiles(files []*drive.File) []DriveFile {
+	result := make([]DriveFile, 0, len(files))
+	for _, file := range files {
 		modifiedAt, err := time.Parse(time.RFC3339, file.ModifiedTime)
 		if err != nil {
 			modifiedAt = time.Time{}
@@ -63,5 +85,5 @@ func (w *DriveFolderWatcher) ListDocuments(ctx context.Context, folderID string)
 	sort.SliceStable(result, func(i, j int) bool {
 		return result[i].ModifiedTime.Before(result[j].ModifiedTime)
 	})
-	return result, nil
+	return result
 }

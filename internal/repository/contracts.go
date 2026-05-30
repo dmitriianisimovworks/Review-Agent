@@ -22,6 +22,11 @@ type DocumentRepository interface {
 	HasBySourceAndExternalID(ctx context.Context, source domain.DocumentSource, externalID string) (bool, error)
 }
 
+type TrackedDocumentRepository interface {
+	Save(ctx context.Context, document domain.TrackedDocument) error
+	ListBySource(ctx context.Context, source domain.DocumentSource) ([]domain.TrackedDocument, error)
+}
+
 type GoogleOAuthConnectionRepository interface {
 	Save(ctx context.Context, connection domain.GoogleOAuthConnection) error
 	GetByGoogleUserID(ctx context.Context, googleUserID string) (domain.GoogleOAuthConnection, error)

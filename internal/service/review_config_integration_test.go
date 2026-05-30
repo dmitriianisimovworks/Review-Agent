@@ -185,6 +185,37 @@ func (r *stubDocumentReader) Read(context.Context, string) (google.Document, err
 	return r.document, nil
 }
 
+type stubTrackedDocumentRepo struct {
+	saved   domain.TrackedDocument
+	entries []domain.TrackedDocument
+}
+
+func (r *stubTrackedDocumentRepo) Save(_ context.Context, document domain.TrackedDocument) error {
+	r.saved = document
+	replaced := false
+	for idx := range r.entries {
+		if r.entries[idx].Source == document.Source && r.entries[idx].ExternalID == document.ExternalID {
+			r.entries[idx] = document
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		r.entries = append(r.entries, document)
+	}
+	return nil
+}
+
+func (r *stubTrackedDocumentRepo) ListBySource(_ context.Context, source domain.DocumentSource) ([]domain.TrackedDocument, error) {
+	result := make([]domain.TrackedDocument, 0, len(r.entries))
+	for _, item := range r.entries {
+		if item.Source == source {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
 func TestAnalysisServiceUsesReviewConfigRolesChunkSizeAndMemoryToggle(t *testing.T) {
 	documentRepo := &stubDocumentRepo{}
 	analysisRepo := &stubAnalysisRepo{

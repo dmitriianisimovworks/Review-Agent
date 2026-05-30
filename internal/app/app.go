@@ -79,6 +79,7 @@ func New() (*App, error) {
 	}
 
 	documentRepo := postgresrepo.NewDocumentRepository(pgPool)
+	trackedDocumentRepo := postgresrepo.NewTrackedDocumentRepository(pgPool)
 	analysisRepo := postgresrepo.NewAnalysisRepository(pgPool)
 	googleOAuthRepo := postgresrepo.NewGoogleOAuthConnectionRepository(pgPool)
 	analysisCache := redisrepo.NewAnalysisCache(redisClient, time.Duration(cfg.Cache.AnalysisTTLSeconds)*time.Second)
@@ -140,10 +141,15 @@ func New() (*App, error) {
 		googleOAuthRepo,
 		googleOAuthProvider,
 	)
+	trackedDocumentService := service.NewTrackedDocumentService(
+		trackedDocumentRepo,
+		documentReader,
+	)
 	googleInboxService := service.NewGoogleInboxService(
 		cfg.Google.InboxFolderID,
 		time.Duration(cfg.Google.InboxPollSeconds)*time.Second,
 		folderWatcher,
+		trackedDocumentRepo,
 		documentRepo,
 		analysisService,
 		commentService,
@@ -156,7 +162,8 @@ func New() (*App, error) {
 			analysisService: analysisService,
 			commentService:  commentService,
 		},
-		GoogleOAuthService: googleOAuthService,
+		GoogleOAuthService:     googleOAuthService,
+		TrackedDocumentService: trackedDocumentService,
 	})
 
 	server := &http.Server{
