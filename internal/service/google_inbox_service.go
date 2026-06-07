@@ -15,14 +15,6 @@ import (
 	"technical-specification-review-agent/internal/repository"
 )
 
-const inboxProcessingComment = "Принял документ на проверку. Приступаю к анализу."
-const inboxProgressComment = "Анализ продолжается. Формирую итоговые замечания и summary."
-const inboxFullCommandAcceptedComment = "Команда принята. Запускаю полный review всего документа."
-const inboxIncrementalCommandAcceptedComment = "Команда принята. Запускаю incremental review с учетом предыдущего контекста."
-const inboxCleanupCommandAcceptedComment = "Команда принята. Удаляю комментарии агента в документе."
-const inboxCleanupCompletedComment = "Комментарии агента удалены."
-const inboxAlreadyProcessingComment = "Документ уже находится в обработке. Дождитесь завершения текущего review."
-
 const inboxProgressCommentDelay = 20 * time.Second
 const inboxTrackedDiscoveryInterval = 30 * time.Second
 
@@ -223,10 +215,6 @@ func (s *GoogleInboxService) enqueueNewDocuments(ctx context.Context, files []go
 			continue
 		}
 
-		if _, err := s.publishServiceComment(ctx, file.ID, inboxProcessingComment); err != nil {
-			log.Printf("google inbox: document_id=%q publish processing comment: %v", file.ID, err)
-		}
-
 		analysis, err := s.analysisService.StartAnalysis(ctx, StartAnalysisInput{
 			Name:         file.Name,
 			Source:       domain.DocumentSourceGoogleDocs,
@@ -258,11 +246,7 @@ func (s *GoogleInboxService) processCommandComments(ctx context.Context, files [
 		}
 		if s.isPendingDocument(file.ID) {
 			if s.shouldNotifyBusyCommand(file.ID, command.commentID) {
-				if _, err := s.publishServiceComment(ctx, file.ID, inboxAlreadyProcessingComment); err != nil {
-					log.Printf("google inbox: document_id=%q publish already-processing comment: %v", file.ID, err)
-				} else {
-					s.markBusyCommandNotified(file.ID, command.commentID)
-				}
+				s.markBusyCommandNotified(file.ID, command.commentID)
 			}
 			continue
 		}
@@ -270,22 +254,14 @@ func (s *GoogleInboxService) processCommandComments(ctx context.Context, files [
 		if err := s.cleanupAgentComments(ctx, file.ID); err != nil {
 			log.Printf("google inbox: document_id=%q cleanup agent comments: %v", file.ID, err)
 		}
-		if _, err := s.publishServiceComment(ctx, file.ID, commandAcceptedComment(command)); err != nil {
-			log.Printf("google inbox: document_id=%q publish processing comment: %v", file.ID, err)
-		}
 		if command.kind == reviewAgentCommandCleanup {
 			if err := s.cleanupAgentComments(ctx, file.ID); err != nil {
 				return err
 			}
-			if _, err := s.publishServiceComment(ctx, file.ID, inboxCleanupCompletedComment); err != nil {
-				log.Printf("google inbox: document_id=%q publish cleanup-completed comment: %v", file.ID, err)
-			}
 			continue
 		}
 		if err := s.validateCommandTargetSection(ctx, file, command); err != nil {
-			if _, publishErr := s.publishServiceComment(ctx, file.ID, fmt.Sprintf("Команда принята, но раздел %s не найден в структуре документа.", strings.TrimSpace(command.targetSectionTitle))); publishErr != nil {
-				log.Printf("google inbox: document_id=%q publish section-not-found comment: %v", file.ID, publishErr)
-			}
+			log.Printf("google inbox: document_id=%q target section not found: %q", file.ID, strings.TrimSpace(command.targetSectionTitle))
 			continue
 		}
 
@@ -329,31 +305,10 @@ func (s *GoogleInboxService) processPending(ctx context.Context) {
 			s.removePending(analysisID)
 		default:
 			if !pending.progressCommentSent && time.Since(pending.startedAt) >= inboxProgressCommentDelay {
-				if _, err := s.publishServiceComment(ctx, pending.documentExternalID, inboxProgressComment); err != nil {
-					log.Printf("google inbox: analysis_id=%q publish progress comment: %v", analysisID, err)
-					continue
-				}
 				s.markProgressCommentSent(analysisID)
 			}
 		}
 	}
-}
-
-func (s *GoogleInboxService) publishServiceComment(ctx context.Context, documentExternalID, content string) ([]string, error) {
-	published, err := s.commentPublisher.Publish(ctx, documentExternalID, []google.CommentDraft{{
-		Type:    "summary",
-		Content: content,
-	}})
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(published))
-	for _, comment := range published {
-		if comment.ID != "" {
-			ids = append(ids, comment.ID)
-		}
-	}
-	return ids, nil
 }
 
 func (s *GoogleInboxService) loadLatestCommand(ctx context.Context, documentExternalID string) (reviewAgentCommand, bool, error) {
@@ -532,19 +487,6 @@ func isReviewAgentCommandText(content string) bool {
 
 func reviewKeyForGoogleDoc(documentExternalID string) string {
 	return string(domain.DocumentSourceGoogleDocs) + ":" + strings.TrimSpace(strings.ToLower(documentExternalID))
-}
-
-func commandAcceptedComment(command reviewAgentCommand) string {
-	if command.kind == reviewAgentCommandCleanup {
-		return inboxCleanupCommandAcceptedComment
-	}
-	if command.mode == domain.AnalysisModeFullReview {
-		return inboxFullCommandAcceptedComment
-	}
-	if strings.TrimSpace(command.targetSectionTitle) != "" {
-		return fmt.Sprintf("Команда принята. Запускаю incremental review для раздела %s.", strings.TrimSpace(command.targetSectionTitle))
-	}
-	return inboxIncrementalCommandAcceptedComment
 }
 
 func (s *GoogleInboxService) shouldNotifyBusyCommand(documentExternalID, commandID string) bool {

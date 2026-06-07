@@ -81,11 +81,8 @@ func TestGoogleInboxServicePublishesDelayedProgressComment(t *testing.T) {
 	if !pending.progressCommentSent {
 		t.Fatalf("expected delayed progress comment to be marked as sent")
 	}
-	if len(publisher.publishedBatches) != 1 {
-		t.Fatalf("expected one additional publish call, got %d", len(publisher.publishedBatches))
-	}
-	if got := publisher.publishedBatches[0][0].Content; got != inboxProgressComment {
-		t.Fatalf("expected progress comment content %q, got %q", inboxProgressComment, got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no service comment publish, got %d", len(publisher.publishedBatches))
 	}
 }
 
@@ -190,11 +187,8 @@ func TestGoogleInboxServiceQueuesIncrementalSectionCommandFromComment(t *testing
 	if analysisRepo.saved.TargetSectionTitle != "4.3" {
 		t.Fatalf("expected target section 4.3, got %q", analysisRepo.saved.TargetSectionTitle)
 	}
-	if len(publisher.publishedBatches) != 1 {
-		t.Fatalf("expected one service publish batch, got %d", len(publisher.publishedBatches))
-	}
-	if got := publisher.publishedBatches[0][0].Content; got != "Команда принята. Запускаю incremental review для раздела 4.3." {
-		t.Fatalf("expected command ack comment, got %q", got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no service publish batch, got %d", len(publisher.publishedBatches))
 	}
 }
 
@@ -408,14 +402,8 @@ func TestGoogleInboxServiceCleanupCommandDeletesAgentCommentsWithoutStartingAnal
 	if len(publisher.deletedCommentIDs) != 2 {
 		t.Fatalf("expected two agent comments to be deleted, got %+v", publisher.deletedCommentIDs)
 	}
-	if len(publisher.publishedBatches) != 2 {
-		t.Fatalf("expected two service publish batches, got %d", len(publisher.publishedBatches))
-	}
-	if got := publisher.publishedBatches[0][0].Content; got != inboxCleanupCommandAcceptedComment {
-		t.Fatalf("expected cleanup ack comment, got %q", got)
-	}
-	if got := publisher.publishedBatches[1][0].Content; got != inboxCleanupCompletedComment {
-		t.Fatalf("expected cleanup completed comment, got %q", got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no service publish batches, got %d", len(publisher.publishedBatches))
 	}
 }
 
@@ -499,11 +487,8 @@ func TestGoogleInboxServicePublishesAlreadyProcessingCommentForCommand(t *testin
 	if err := inbox.tick(context.Background()); err != nil {
 		t.Fatalf("second tick() error = %v", err)
 	}
-	if len(publisher.publishedBatches) != 1 {
-		t.Fatalf("expected one publish batch, got %d", len(publisher.publishedBatches))
-	}
-	if got := publisher.publishedBatches[0][0].Content; got != inboxAlreadyProcessingComment {
-		t.Fatalf("expected already-processing comment, got %q", got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no publish batch, got %d", len(publisher.publishedBatches))
 	}
 }
 
@@ -596,14 +581,8 @@ func TestGoogleInboxServicePublishesSectionNotFoundComment(t *testing.T) {
 	if err := inbox.tick(context.Background()); err != nil {
 		t.Fatalf("tick() error = %v", err)
 	}
-	if len(publisher.publishedBatches) != 2 {
-		t.Fatalf("expected two publish batches, got %d", len(publisher.publishedBatches))
-	}
-	if got := publisher.publishedBatches[0][0].Content; got != "Команда принята. Запускаю incremental review для раздела 9.9." {
-		t.Fatalf("expected command ack comment, got %q", got)
-	}
-	if got := publisher.publishedBatches[1][0].Content; got != "Команда принята, но раздел 9.9 не найден в структуре документа." {
-		t.Fatalf("expected section-not-found comment, got %q", got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no publish batches, got %d", len(publisher.publishedBatches))
 	}
 }
 
@@ -686,11 +665,8 @@ func TestGoogleInboxServiceQueuesCommandForTrackedDocumentWithoutInboxFolder(t *
 	if got := analysisRepo.saved.DocumentID; got == "" {
 		t.Fatalf("expected queued analysis document id to be set")
 	}
-	if len(publisher.publishedBatches) != 1 {
-		t.Fatalf("expected one command ack publish batch, got %d", len(publisher.publishedBatches))
-	}
-	if got := publisher.publishedBatches[0][0].Content; got != inboxFullCommandAcceptedComment {
-		t.Fatalf("expected full-review ack comment, got %q", got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no command ack publish batch, got %d", len(publisher.publishedBatches))
 	}
 }
 
@@ -768,7 +744,7 @@ func TestGoogleInboxServiceAutoRegistersAccessibleGoogleDocs(t *testing.T) {
 	if len(jobRunner.enqueued) != 1 {
 		t.Fatalf("expected one enqueued analysis, got %+v", jobRunner.enqueued)
 	}
-	if got := publisher.publishedBatches[0][0].Content; got != inboxFullCommandAcceptedComment {
-		t.Fatalf("expected full-review ack comment, got %q", got)
+	if len(publisher.publishedBatches) != 0 {
+		t.Fatalf("expected no service comment publish, got %d", len(publisher.publishedBatches))
 	}
 }
