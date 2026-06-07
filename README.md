@@ -1,3 +1,4 @@
+
 # Technical Specification Review Agent
 
 Backend-сервис для автоматического review технических спецификаций с интеграцией в Google Docs.
@@ -196,3 +197,5 @@ curl -X POST http://127.0.0.1:8080/api/v1/google/docs/register \
 - cleanup commands
 - auto-discovery shared docs
 =======
+=======
+info in mcp
