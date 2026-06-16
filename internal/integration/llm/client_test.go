@@ -66,6 +66,7 @@ func TestOpenAICompatibleClientUsesMaxCompletionTokensForDirectOpenAIGPT5(t *tes
 		Mode:         domain.AnalysisModeFullReview,
 		Source:       domain.DocumentSourceUpload,
 		Role:         domain.ReviewerRoleTechLead,
+		Temperature:  -1,
 	})
 	if err != nil {
 		t.Fatalf("AnalyzeChunk() error = %v", err)
@@ -77,17 +78,25 @@ func TestOpenAICompatibleClientUsesMaxCompletionTokensForDirectOpenAIGPT5(t *tes
 	if captured.MaxTokens != 0 {
 		t.Fatalf("expected max_tokens to be omitted, got %d", captured.MaxTokens)
 	}
+	if captured.Temperature != 0 {
+		t.Fatalf("expected temperature to be omitted, got %v", captured.Temperature)
+	}
+	if captured.TopP != 0 {
+		t.Fatalf("expected top_p to be omitted, got %v", captured.TopP)
+	}
 }
 
 func TestOpenAICompatibleClientUsesMaxTokensForCompatibleNonOpenAIProviders(t *testing.T) {
 	var captured chatCompletionRequest
 
 	client := NewOpenAICompatibleClient(config.LLMConfig{
-		BaseURL:   "https://openrouter.ai/api/v1",
-		APIKey:    "test-key",
-		Model:     "openai/gpt-5.5",
-		Timeout:   30,
-		MaxTokens: 900,
+		BaseURL:     "https://openrouter.ai/api/v1",
+		APIKey:      "test-key",
+		Model:       "openai/gpt-5.5",
+		Timeout:     30,
+		MaxTokens:   900,
+		Temperature: 0.3,
+		TopP:        0.8,
 	}, stubPromptBuilder{})
 	client.httpClient = &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -114,6 +123,7 @@ func TestOpenAICompatibleClientUsesMaxTokensForCompatibleNonOpenAIProviders(t *t
 		Mode:         domain.AnalysisModeFullReview,
 		Source:       domain.DocumentSourceUpload,
 		Role:         domain.ReviewerRoleTechLead,
+		Temperature:  -1,
 	})
 	if err != nil {
 		t.Fatalf("AnalyzeChunk() error = %v", err)
@@ -124,5 +134,11 @@ func TestOpenAICompatibleClientUsesMaxTokensForCompatibleNonOpenAIProviders(t *t
 	}
 	if captured.MaxCompletionTokens != 0 {
 		t.Fatalf("expected max_completion_tokens to be omitted, got %d", captured.MaxCompletionTokens)
+	}
+	if captured.Temperature == 0 {
+		t.Fatalf("expected temperature to be present")
+	}
+	if captured.TopP == 0 {
+		t.Fatalf("expected top_p to be present")
 	}
 }

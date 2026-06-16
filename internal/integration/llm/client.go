@@ -61,7 +61,7 @@ type OpenAICompatibleClient struct {
 type chatCompletionRequest struct {
 	Model               string            `json:"model"`
 	Messages            []chatMessage     `json:"messages"`
-	Temperature         float64           `json:"temperature"`
+	Temperature         float64           `json:"temperature,omitempty"`
 	TopP                float64           `json:"top_p,omitempty"`
 	MaxTokens           int               `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
@@ -203,13 +203,15 @@ func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPro
 	}
 
 	payload := chatCompletionRequest{
-		Model:       c.model,
-		Messages:    buildChatMessages(builtPrompt, c.useJSONPrefix),
-		Temperature: temperature,
-		TopP:        topP,
+		Model:    c.model,
+		Messages: buildChatMessages(builtPrompt, c.useJSONPrefix),
 		ResponseFormat: map[string]string{
 			"type": "json_object",
 		},
+	}
+	if !c.usesOpenAIDefaultSamplingParams() {
+		payload.Temperature = temperature
+		payload.TopP = topP
 	}
 	if c.usesOpenAIMaxCompletionTokens() {
 		payload.MaxCompletionTokens = maxTokens
@@ -290,6 +292,10 @@ func (c *OpenAICompatibleClient) usesOpenAIMaxCompletionTokens() bool {
 	model := strings.ToLower(strings.TrimSpace(c.model))
 
 	return strings.Contains(baseURL, "api.openai.com") && strings.HasPrefix(model, "gpt-5")
+}
+
+func (c *OpenAICompatibleClient) usesOpenAIDefaultSamplingParams() bool {
+	return c.usesOpenAIMaxCompletionTokens()
 }
 
 func promptVersion(chunkIndex int) string {
