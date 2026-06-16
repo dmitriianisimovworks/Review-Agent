@@ -3,6 +3,9 @@
 
 Backend-сервис для автоматического review технических спецификаций с интеграцией в Google Docs.
 
+Service account для добавления в Google Docs:
+`review-agent-service@review-agent-497217.iam.gserviceaccount.com`
+
 Агент:
 - читает документ из Google Docs или из прямого API-вызова;
 - разбивает документ на структурные секции и чанки;

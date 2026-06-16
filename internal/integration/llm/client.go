@@ -59,12 +59,13 @@ type OpenAICompatibleClient struct {
 }
 
 type chatCompletionRequest struct {
-	Model          string            `json:"model"`
-	Messages       []chatMessage     `json:"messages"`
-	Temperature    float64           `json:"temperature"`
-	TopP           float64           `json:"top_p,omitempty"`
-	MaxTokens      int               `json:"max_tokens,omitempty"`
-	ResponseFormat map[string]string `json:"response_format,omitempty"`
+	Model               string            `json:"model"`
+	Messages            []chatMessage     `json:"messages"`
+	Temperature         float64           `json:"temperature"`
+	TopP                float64           `json:"top_p,omitempty"`
+	MaxTokens           int               `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      map[string]string `json:"response_format,omitempty"`
 }
 
 type chatMessage struct {
@@ -206,10 +207,14 @@ func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPro
 		Messages:    buildChatMessages(builtPrompt, c.useJSONPrefix),
 		Temperature: temperature,
 		TopP:        topP,
-		MaxTokens:   maxTokens,
 		ResponseFormat: map[string]string{
 			"type": "json_object",
 		},
+	}
+	if c.usesOpenAIMaxCompletionTokens() {
+		payload.MaxCompletionTokens = maxTokens
+	} else {
+		payload.MaxTokens = maxTokens
 	}
 
 	body, err := json.Marshal(payload)
@@ -278,6 +283,13 @@ func shouldUseDeepSeekJSONPrefix(cfg config.LLMConfig) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(cfg.BaseURL))
 	model := strings.ToLower(strings.TrimSpace(cfg.Model))
 	return strings.Contains(baseURL, "deepseek.com") || strings.Contains(model, "deepseek")
+}
+
+func (c *OpenAICompatibleClient) usesOpenAIMaxCompletionTokens() bool {
+	baseURL := strings.ToLower(strings.TrimSpace(c.baseURL))
+	model := strings.ToLower(strings.TrimSpace(c.model))
+
+	return strings.Contains(baseURL, "api.openai.com") && strings.HasPrefix(model, "gpt-5")
 }
 
 func promptVersion(chunkIndex int) string {

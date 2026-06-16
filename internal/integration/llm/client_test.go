@@ -1,78 +1,128 @@
 package llm
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"technical-specification-review-agent/internal/config"
+	"technical-specification-review-agent/internal/domain"
 	"technical-specification-review-agent/internal/prompt"
 )
 
-func TestParseChunkAnalysisExtractsFirstBalancedJSONObject(t *testing.T) {
-	content := "```json\n{\"findings\":[{\"role\":\"qa_reviewer\",\"category\":\"missing_requirement\",\"severity\":\"ERROR\",\"problem\":\"Проблема\",\"why_it_is_bad\":\"Последствие\",\"how_to_fix\":\"Исправление\"}]}\n```\nДополнительный хвост"
+type stubPromptBuilder struct{}
 
-	parsed, err := parseChunkAnalysis(content)
+func (stubPromptBuilder) Build(prompt.Input) prompt.BuiltPrompt {
+	return prompt.BuiltPrompt{
+		System: "system",
+		User:   "user",
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestOpenAICompatibleClientUsesMaxCompletionTokensForDirectOpenAIGPT5(t *testing.T) {
+	var captured chatCompletionRequest
+
+	client := NewOpenAICompatibleClient(config.LLMConfig{
+		BaseURL:   "https://api.openai.com/v1",
+		APIKey:    "test-key",
+		Model:     "gpt-5.5",
+		Timeout:   30,
+		MaxTokens: 1100,
+	}, stubPromptBuilder{})
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1/chat/completions" {
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(body, &captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"{\"findings\":[]}"}}]}`)),
+			}, nil
+		}),
+	}
+
+	_, err := client.AnalyzeChunk(context.Background(), AnalyzeInput{
+		DocumentName: "spec.md",
+		ChunkText:    "chunk",
+		ChunkIndex:   0,
+		ChunkCount:   1,
+		Mode:         domain.AnalysisModeFullReview,
+		Source:       domain.DocumentSourceUpload,
+		Role:         domain.ReviewerRoleTechLead,
+	})
 	if err != nil {
-		t.Fatalf("parseChunkAnalysis() error = %v", err)
+		t.Fatalf("AnalyzeChunk() error = %v", err)
 	}
-	if len(parsed.Findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(parsed.Findings))
+
+	if captured.MaxCompletionTokens != 1100 {
+		t.Fatalf("expected max_completion_tokens 1100, got %d", captured.MaxCompletionTokens)
 	}
-	if parsed.Findings[0].Role != "qa_reviewer" {
-		t.Fatalf("unexpected role: %s", parsed.Findings[0].Role)
+	if captured.MaxTokens != 0 {
+		t.Fatalf("expected max_tokens to be omitted, got %d", captured.MaxTokens)
 	}
 }
 
-func TestExtractFirstJSONObjectHandlesBracesInsideStrings(t *testing.T) {
-	content := `prefix {"findings":[{"problem":"Нужно сохранить формат {json} внутри строки","why_it_is_bad":"ok","how_to_fix":"ok","role":"qa_reviewer","category":"contradiction","severity":"WARNING"}]} suffix`
+func TestOpenAICompatibleClientUsesMaxTokensForCompatibleNonOpenAIProviders(t *testing.T) {
+	var captured chatCompletionRequest
 
-	got, ok := extractFirstJSONObject(content)
-	if !ok {
-		t.Fatalf("expected object to be extracted")
-	}
-	expected := `{"findings":[{"problem":"Нужно сохранить формат {json} внутри строки","why_it_is_bad":"ok","how_to_fix":"ok","role":"qa_reviewer","category":"contradiction","severity":"WARNING"}]}`
-	if got != expected {
-		t.Fatalf("unexpected extracted object:\nwant: %s\ngot:  %s", expected, got)
-	}
-}
-
-func TestBuildChatMessagesAddsAssistantPrefixForDeepSeek(t *testing.T) {
-	cfg := config.LLMConfig{
-		BaseURL: "https://api.deepseek.com",
-		Model:   "deepseek-v4-flash",
-	}
-	if !shouldUseDeepSeekJSONPrefix(cfg) {
-		t.Fatalf("expected deepseek prefix to be enabled")
-	}
-
-	messages := buildChatMessages(prompt.BuiltPrompt{
-		System: "system",
-		User:   "user",
-	}, true)
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(messages))
-	}
-	if messages[2].Role != "assistant" {
-		t.Fatalf("expected assistant prefix message, got %s", messages[2].Role)
-	}
-	if messages[2].Content != "{\"findings\":" {
-		t.Fatalf("unexpected assistant prefix: %s", messages[2].Content)
-	}
-}
-
-func TestBuildChatMessagesSkipsAssistantPrefixForNonDeepSeek(t *testing.T) {
-	cfg := config.LLMConfig{
-		BaseURL: "https://api.cerebras.ai/v1",
-		Model:   "gpt-oss-120b",
-	}
-	if shouldUseDeepSeekJSONPrefix(cfg) {
-		t.Fatalf("expected deepseek prefix to be disabled")
+	client := NewOpenAICompatibleClient(config.LLMConfig{
+		BaseURL:   "https://openrouter.ai/api/v1",
+		APIKey:    "test-key",
+		Model:     "openai/gpt-5.5",
+		Timeout:   30,
+		MaxTokens: 900,
+	}, stubPromptBuilder{})
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(body, &captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"{\"findings\":[]}"}}]}`)),
+			}, nil
+		}),
 	}
 
-	messages := buildChatMessages(prompt.BuiltPrompt{
-		System: "system",
-		User:   "user",
-	}, false)
-	if len(messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(messages))
+	_, err := client.AnalyzeChunk(context.Background(), AnalyzeInput{
+		DocumentName: "spec.md",
+		ChunkText:    "chunk",
+		ChunkIndex:   0,
+		ChunkCount:   1,
+		Mode:         domain.AnalysisModeFullReview,
+		Source:       domain.DocumentSourceUpload,
+		Role:         domain.ReviewerRoleTechLead,
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeChunk() error = %v", err)
+	}
+
+	if captured.MaxTokens != 900 {
+		t.Fatalf("expected max_tokens 900, got %d", captured.MaxTokens)
+	}
+	if captured.MaxCompletionTokens != 0 {
+		t.Fatalf("expected max_completion_tokens to be omitted, got %d", captured.MaxCompletionTokens)
 	}
 }
