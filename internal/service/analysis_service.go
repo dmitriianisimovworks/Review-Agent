@@ -39,10 +39,10 @@ type AnalysisService struct {
 }
 
 const (
-	maxFindingsPerRole      = 6
-	maxFindingsFullReview   = 40
-	maxFindingsIncremental  = 18
-	maxFindingsPerTheme     = 6
+	maxFindingsPerRole      = 10
+	maxFindingsFullReview   = 80
+	maxFindingsIncremental  = 30
+	maxFindingsPerTheme     = 10
 	maxSummaryThemes        = 4
 	maxSummaryThemeExamples = 2
 )
