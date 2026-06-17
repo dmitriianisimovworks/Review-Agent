@@ -142,3 +142,58 @@ func TestOpenAICompatibleClientUsesMaxTokensForCompatibleNonOpenAIProviders(t *t
 		t.Fatalf("expected top_p to be present")
 	}
 }
+
+func TestOpenAICompatibleClientRepairsInvalidStructuredOutput(t *testing.T) {
+	callCount := 0
+
+	client := NewOpenAICompatibleClient(config.LLMConfig{
+		BaseURL:   "https://api.openai.com/v1",
+		APIKey:    "test-key",
+		Model:     "gpt-5.5",
+		Timeout:   30,
+		MaxTokens: 1100,
+	}, stubPromptBuilder{})
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			var responseBody string
+			switch callCount {
+			case 1:
+				responseBody = `{"choices":[{"message":{"role":"assistant","content":"Найдено несколько проблем, вот они..."}}]}`
+			case 2:
+				responseBody = `{"choices":[{"message":{"role":"assistant","content":"{\"findings\":[{\"role\":\"tech_lead\",\"category\":\"ambiguity\",\"severity\":\"WARNING\",\"problem\":\"Не описан статус кейса\",\"why_it_is_bad\":\"Состояние останется неоднозначным\",\"how_to_fix\":\"Добавить явный перечень статусов\"}]}"}}]}`
+			default:
+				t.Fatalf("unexpected extra llm call: %d", callCount)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(responseBody)),
+			}, nil
+		}),
+	}
+
+	result, err := client.AnalyzeChunk(context.Background(), AnalyzeInput{
+		DocumentName: "spec.md",
+		ChunkText:    "chunk",
+		ChunkIndex:   0,
+		ChunkCount:   1,
+		Mode:         domain.AnalysisModeFullReview,
+		Source:       domain.DocumentSourceUpload,
+		Role:         domain.ReviewerRoleTechLead,
+		Temperature:  -1,
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeChunk() error = %v", err)
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 llm calls, got %d", callCount)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding after repair, got %d", len(result.Findings))
+	}
+	if result.Findings[0].Problem != "Не описан статус кейса" {
+		t.Fatalf("unexpected repaired finding problem: %s", result.Findings[0].Problem)
+	}
+}

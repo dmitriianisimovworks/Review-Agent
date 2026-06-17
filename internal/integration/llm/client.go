@@ -148,7 +148,11 @@ func (c *OpenAICompatibleClient) executePrompt(
 		err     error
 	)
 	for attempt := 1; attempt <= maxStructuredOutputAttempts; attempt++ {
-		content, err = c.requestLLMContent(ctx, builtPrompt, input)
+		if attempt == 1 {
+			content, err = c.requestLLMContent(ctx, builtPrompt, input)
+		} else {
+			content, err = c.requestLLMRepairContent(ctx, input, content)
+		}
 		if err != nil {
 			return ChunkAnalysisResult{}, err
 		}
@@ -186,6 +190,35 @@ func (c *OpenAICompatibleClient) executePrompt(
 		UserPrompt:    builtPrompt.User,
 		RawResponse:   content,
 	}, nil
+}
+
+func (c *OpenAICompatibleClient) requestLLMRepairContent(ctx context.Context, input AnalyzeInput, invalidContent string) (string, error) {
+	repairPrompt := prompt.BuiltPrompt{
+		System: strings.TrimSpace(`
+Ты исправляешь ответ другой модели.
+
+Твоя задача:
+- взять уже сгенерированный ответ;
+- извлечь из него findings без добавления новых мыслей;
+- вернуть только один валидный JSON-объект формата {"findings":[...]}.
+
+Запрещено:
+- добавлять markdown;
+- добавлять пояснения;
+- писать текст до или после JSON;
+- выдумывать новые findings, которых не было в исходном ответе.
+
+Если в исходном ответе нельзя надёжно восстановить findings, верни {"findings":[]}.
+Первый символ ответа должен быть {.
+`),
+		User: fmt.Sprintf(
+			"Роль ревью: %s\nПреобразуй следующий ответ в валидный JSON-объект формата {\"findings\":[...]} без изменения смысла и без добавления новых выводов.\n\n%s",
+			roleDisplayName(input.Role),
+			invalidContent,
+		),
+	}
+
+	return c.requestLLMContent(ctx, repairPrompt, input)
 }
 
 func (c *OpenAICompatibleClient) requestLLMContent(ctx context.Context, builtPrompt prompt.BuiltPrompt, input AnalyzeInput) (string, error) {
@@ -395,6 +428,29 @@ func normalizeCategory(input string) string {
 	}
 
 	return strings.ReplaceAll(value, " ", "_")
+}
+
+func roleDisplayName(role domain.ReviewerRole) string {
+	switch role {
+	case domain.ReviewerRoleTechLead:
+		return "Tech Lead"
+	case domain.ReviewerRoleSolutionArchitect:
+		return "Solution Architect"
+	case domain.ReviewerRoleSeniorBackendEngineer:
+		return "Senior Backend Engineer"
+	case domain.ReviewerRoleSeniorFrontendEngineer:
+		return "Senior Frontend Engineer"
+	case domain.ReviewerRoleMobileLead:
+		return "Mobile Lead"
+	case domain.ReviewerRoleDevOpsReviewer:
+		return "DevOps Reviewer"
+	case domain.ReviewerRoleQAReviewer:
+		return "QA Reviewer"
+	case domain.ReviewerRoleSecurityLead:
+		return "Security Lead"
+	default:
+		return "Reviewer"
+	}
 }
 
 func safeErrorSnippet(value string, maxRunes int) string {
